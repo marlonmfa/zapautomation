@@ -1,0 +1,4 @@
+[
+  { "contact": "5511999999999", "message": "Hello, this is a test." },
+  { "contact": "5521988888888", "message": "Another message with random delay." }
+]
