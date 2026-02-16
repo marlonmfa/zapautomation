@@ -4,9 +4,11 @@ const path = require('path');
 
 const SESSION_ID = process.env.SESSION_ID || 'default';
 const AUTH_DATA_PATH = process.env.AUTH_DATA_PATH || '.wwebjs_auth';
-const BATCH_DELAY_MIN_MS = parseInt(process.env.BATCH_DELAY_MIN_MS || '5000', 10);
-const BATCH_DELAY_MAX_MS = parseInt(process.env.BATCH_DELAY_MAX_MS || '30000', 10);
-const BATCH_SEND_TIMEOUT_MS = parseInt(process.env.BATCH_SEND_TIMEOUT_MS || '60000', 10);
+const BATCH_DELAY_MIN_MS = parseInt(process.env.BATCH_DELAY_MIN_MS || '3000', 10);
+const BATCH_DELAY_MAX_MS = parseInt(process.env.BATCH_DELAY_MAX_MS || '7000', 10);
+const BATCH_SEND_TIMEOUT_MS = parseInt(process.env.BATCH_SEND_TIMEOUT_MS || '15000', 10);
+/** When 'false', send to all contacts (do not skip those who already received a message). Default: 'true' */
+const BATCH_SKIP_IF_EVER_SENT = process.env.BATCH_SKIP_IF_EVER_SENT !== 'false';
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
@@ -37,6 +39,10 @@ function getBatchDelayRange() {
 
 function getBatchSendTimeoutMs() {
   return BATCH_SEND_TIMEOUT_MS;
+}
+
+function getBatchSkipIfEverSent() {
+  return BATCH_SKIP_IF_EVER_SENT;
 }
 
 function getPuppeteerExecutablePath() {
@@ -80,6 +86,7 @@ module.exports = {
   getSessionClientId,
   getBatchDelayRange,
   getBatchSendTimeoutMs,
+  getBatchSkipIfEverSent,
   getPuppeteerExecutablePath,
   getOpenAiApiKey,
   getElevenLabsApiKey,

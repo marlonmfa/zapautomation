@@ -10,22 +10,22 @@
 
 const WHATSAPP_WEB_SEND_URL = 'https://web.whatsapp.com/send';
 
-/** Selectors for message input (WhatsApp Web DOM; may need updates if WhatsApp changes UI). */
+/** Selectors for CHAT message input ONLY (footer of open conversation, NOT search box). */
 const MESSAGE_INPUT_SELECTORS = [
+  '#main footer div[contenteditable="true"][data-tab="10"]',
+  '#main footer [contenteditable="true"]',
+  'footer div[contenteditable="true"][data-tab="10"]',
+  '[data-testid="conversation-compose-box-input"]',
+  '#main .copyable-area footer [contenteditable="true"]',
   'div[contenteditable="true"][data-tab="10"]',
-  'footer div[contenteditable="true"]',
-  'div[contenteditable="true"][title="Mensagem"]',
-  'div[contenteditable="true"][title="Message"]',
-  '#main footer div[contenteditable="true"]',
-  '#main .copyable-area [contenteditable="true"][role="textbox"]',
-  'div[contenteditable="true"]',
+  'footer [contenteditable="true"]',
 ];
 
-const DEFAULT_WAIT_AFTER_NAV_MS = 4500;
-const DEFAULT_WAIT_INPUT_READY_MS = 800;
-const DEFAULT_TYPE_DELAY_MS = 18;
-const DEFAULT_WAIT_AFTER_SEND_MS = 1000;
-const DEFAULT_NAV_TIMEOUT_MS = 60000;
+const DEFAULT_WAIT_AFTER_NAV_MS = 3500;
+const DEFAULT_WAIT_INPUT_READY_MS = 300;
+const DEFAULT_WAIT_AFTER_PASTE_MS = 600;
+const DEFAULT_WAIT_AFTER_SEND_MS = 500;
+const DEFAULT_NAV_TIMEOUT_MS = 15000;
 
 /**
  * Wait for the message input to be visible and return it.
@@ -40,18 +40,46 @@ async function waitForMessageInput(page, timeoutMs = 15000) {
       try {
         const el = await page.$(sel);
         if (el) {
-          const visible = await el.evaluate((e) => {
+          const isChatInput = await el.evaluate((e) => {
             const style = window.getComputedStyle(e);
-            return style.display !== 'none' && style.visibility !== 'hidden' && e.offsetParent !== null;
+            if (style.display === 'none' || style.visibility === 'hidden' || !e.offsetParent) return false;
+            const inSearch = !!e.closest('[data-testid="chat-list"]');
+            const inFooter = !!e.closest('footer');
+            const rect = e.getBoundingClientRect();
+            const inBottomArea = rect.top > window.innerHeight * 0.35;
+            return !inSearch && (inFooter || inBottomArea);
           }).catch(() => false);
-          if (visible) return el;
+          if (isChatInput) return el;
           await el.dispose();
         }
       } catch (_) {}
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 400));
   }
   return null;
+}
+
+/**
+ * Insert full message at once (no typing = no truncation or orthography errors).
+ * Uses execCommand insertText. Verifies content was inserted before returning.
+ */
+async function insertFullMessage(page, input, message) {
+  const text = String(message);
+  await input.click();
+  await page.evaluate((el, msg) => {
+    el.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertText', false, msg);
+  }, input, text);
+  await new Promise((r) => setTimeout(r, 150));
+  const inserted = await input.evaluate((el) => (el.innerText || el.textContent || '').trim());
+  if (inserted.length < text.length * 0.5) {
+    throw new Error('Message truncated: inserted ' + inserted.length + ' of ' + text.length);
+  }
 }
 
 /**
@@ -63,8 +91,8 @@ async function waitForMessageInput(page, timeoutMs = 15000) {
  * @param {object} [options]
  * @param {number} [options.timeoutMs] - Navigation + wait timeout (default 60000)
  * @param {number} [options.waitAfterNavMs] - Ms to wait after navigation (default 4500)
- * @param {number} [options.waitInputReadyMs] - Ms to wait after input is found before typing (default 800)
- * @param {number} [options.typeDelayMs] - Delay between keystrokes (default 18)
+ * @param {number} [options.waitInputReadyMs] - Ms to wait after input is found before paste (default 400)
+ * @param {number} [options.waitAfterPasteMs] - Ms to wait after pasting full message, before Enter (default 800)
  * @param {number} [options.waitAfterSendMs] - Ms to wait after pressing Enter (default 1000)
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
@@ -72,16 +100,20 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
   const timeoutMs = options.timeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
   const waitAfterNavMs = options.waitAfterNavMs ?? DEFAULT_WAIT_AFTER_NAV_MS;
   const waitInputReadyMs = options.waitInputReadyMs ?? DEFAULT_WAIT_INPUT_READY_MS;
-  const typeDelayMs = options.typeDelayMs ?? DEFAULT_TYPE_DELAY_MS;
+  const waitAfterPasteMs = options.waitAfterPasteMs ?? DEFAULT_WAIT_AFTER_PASTE_MS;
   const waitAfterSendMs = options.waitAfterSendMs ?? DEFAULT_WAIT_AFTER_SEND_MS;
 
-  const digits = String(phoneDigits).replace(/\D/g, '');
+  let digits = String(phoneDigits).replace(/\D/g, '');
   if (!digits.length) return { success: false, error: 'Invalid phone digits' };
+  if (!digits.startsWith('55')) digits = '55' + digits;
+  while (digits.length < 13 && digits.length >= 4) {
+    digits = digits.slice(0, 4) + '9' + digits.slice(4);
+  }
 
   const url = `${WHATSAPP_WEB_SEND_URL}/?phone=${digits}`;
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: timeoutMs });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   } catch (err) {
     return { success: false, error: err && (err.message || String(err)) };
   }
@@ -93,12 +125,16 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
     try {
       const hasAlert = await page.$('div[role="alertdialog"]').then((e) => !!e);
       if (hasAlert) await page.keyboard.press('Escape');
-      await new Promise((r) => setTimeout(r, 1200));
-      const retry = await page.$('div[contenteditable="true"]');
+      await new Promise((r) => setTimeout(r, 2000));
+      let retry = null;
+      for (const sel of MESSAGE_INPUT_SELECTORS) {
+        retry = await page.$(sel);
+        if (retry) break;
+      }
       if (retry) {
-        await retry.click();
         await new Promise((r) => setTimeout(r, waitInputReadyMs));
-        await page.keyboard.type(message, { delay: typeDelayMs });
+        await insertFullMessage(page, retry, message);
+        await new Promise((r) => setTimeout(r, waitAfterPasteMs));
         await page.keyboard.press('Enter');
         await new Promise((r) => setTimeout(r, waitAfterSendMs));
         return { success: true };
@@ -110,9 +146,9 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
   }
 
   try {
-    await input.click();
     await new Promise((r) => setTimeout(r, waitInputReadyMs));
-    await page.keyboard.type(message, { delay: typeDelayMs });
+    await insertFullMessage(page, input, message);
+    await new Promise((r) => setTimeout(r, waitAfterPasteMs));
     await page.keyboard.press('Enter');
     await new Promise((r) => setTimeout(r, waitAfterSendMs));
     return { success: true };

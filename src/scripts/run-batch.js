@@ -12,14 +12,19 @@ const QRCode = require('qrcode');
 const { createClient } = require('../client');
 const { createQRServer } = require('../qr-server');
 const { runBatch } = require('../batch-sender');
-const { getBatchDelayRange, getBatchSendTimeoutMs, getSessionClientId } = require('../config');
+const { getBatchDelayRange, getBatchSendTimeoutMs, getBatchSkipIfEverSent, getSessionClientId } = require('../config');
 
 /** Fixed port for QR page so the URL is predictable if the browser does not open automatically. */
 const QR_SERVER_PORT = 37830;
 
-const batchPath = process.argv[2];
+const args = process.argv.slice(2);
+const batchPath = args.find((a) => !a.startsWith('--'));
+const forceListOnly = args.includes('--force');
+const useApiSend = args.includes('--api');
+if (useApiSend) process.env.BATCH_USE_BROWSER_SEND = 'false';
 if (!batchPath) {
-  console.error('Usage: node src/scripts/run-batch.js <path-to-batch.json>');
+  console.error('Usage: node src/scripts/run-batch.js <path-to-batch.json> [--force]');
+  console.error('  --force  Enviar APENAS para a lista (não pula quem já recebeu; envia para todos no arquivo).');
   process.exit(1);
 }
 
@@ -127,16 +132,24 @@ client.on('ready', async () => {
   }
 
   const useBrowserSend = process.env.BATCH_USE_BROWSER_SEND !== 'false';
+  const skipIfEverSent = forceListOnly ? false : getBatchSkipIfEverSent();
+  const skipIfSentToday = skipIfEverSent;
   if (useBrowserSend) {
-    console.log('Modo: envio via navegador (abre a conversa pela URL e simula digitação).');
+    console.log('Modo: envio via navegador (digita a mensagem inteira antes de enviar).');
   }
-  console.log('Regra: envio apenas para quem ainda não recebeu; contatos que já receberam mensagem anteriormente são ignorados.');
+  if (forceListOnly || !skipIfEverSent) {
+    console.log('Modo: enviar apenas para a lista (todos os contatos do arquivo).');
+  } else {
+    console.log('Regra: envio apenas para quem ainda não recebeu; contatos que já receberam mensagem anteriormente são ignorados.');
+  }
 
   try {
     console.log('Enviando para cada contato (passo a passo abaixo):');
     const result = await runBatch(client, items, {
       sendTimeoutMs: getBatchSendTimeoutMs(),
       useBrowserSend,
+      skipIfEverSent,
+      skipIfSentToday,
       onProgress: (current, total, contactId) => {
         // Progress is also emitted as contact_start in onStep
       },

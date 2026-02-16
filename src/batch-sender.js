@@ -388,7 +388,10 @@ async function runBatch(client, items, options = {}) {
     onProgress(i + 1, total, contactId);
     onStep({ type: 'contact_start', contactId, current: i + 1, total, delayMs: delay });
 
-    const resolvedId = await resolveChatId(client, contactId);
+    let resolvedId;
+    if (skipIfEverSent || skipIfSentToday) {
+      resolvedId = await resolveChatId(client, contactId);
+    }
 
     if (skipIfEverSent) {
       const lastFromMe = await getLastMessageFromMe(client, resolvedId);
@@ -418,8 +421,12 @@ async function runBatch(client, items, options = {}) {
     if (useBrowserSend) {
       onStep({ type: 'attempt_start', contactId, attempt: 0, maxAttempts: 1 });
       result = await sendViaBrowser(client, contactId, message, sendTimeoutMs);
-      if (result.success) onStep({ type: 'send_ok', contactId, attempt: 0 });
-      else onStep({ type: 'send_fail', contactId, attempt: 0, error: result.error });
+      if (result.success) {
+        onStep({ type: 'send_ok', contactId, attempt: 0 });
+        await sleep(2500);
+      } else {
+        onStep({ type: 'send_fail', contactId, attempt: 0, error: result.error });
+      }
     } else if (skipVerify) {
       result = await sendOnce(client, contactId, message, sendTimeoutMs);
     } else {

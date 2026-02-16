@@ -14,6 +14,8 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const { getBatchDelayRange, getPuppeteerExecutablePath } = require('../config');
 const { openChatAndSendMessage } = require('../send-via-browser');
+const { toBrazilWhatsApp } = require('../batch-lucas-utils');
+const { ensureBrazilian13Digits } = require('../batch-sender');
 
 const WHATSAPP_WEB_URL = 'https://web.whatsapp.com';
 
@@ -32,9 +34,9 @@ function randomDelayMs(minMs, maxMs) {
 }
 
 function normalizeContact(contact) {
-  const digits = String(contact).replace(/\D/g, '');
+  const digits = toBrazilWhatsApp(contact);
   if (!digits.length) return '';
-  return digits.startsWith('55') ? digits : '55' + digits;
+  return ensureBrazilian13Digits(digits);
 }
 
 module.exports = { normalizeContact, randomDelayMs, sleep };
@@ -154,6 +156,7 @@ async function main() {
       results.push({ contact: contactId, success: true });
       sent++;
       console.log(`  → Enviado.`);
+      await sleep(1200);
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       results.push({ contact: contactId, success: false, error: msg });

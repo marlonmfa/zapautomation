@@ -39,8 +39,8 @@ describe('config', () => {
     delete process.env.BATCH_DELAY_MAX_MS;
     const config = require('../config');
     const range = config.getBatchDelayRange();
-    expect(range.minMs).toBe(5000);
-    expect(range.maxMs).toBe(30000);
+    expect(range.minMs).toBe(3000);
+    expect(range.maxMs).toBe(7000);
 
     process.env.BATCH_DELAY_MIN_MS = '1000';
     process.env.BATCH_DELAY_MAX_MS = '10000';
