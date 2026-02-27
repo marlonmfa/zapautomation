@@ -96,7 +96,7 @@ async function insertFullMessage(page, input, message) {
  * @param {number} [options.waitAfterSendMs] - Ms to wait after pressing Enter (default 1000)
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-async function openChatAndSendMessageOnPage(page, phoneDigits, message, options = {}) {
+async function openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
   const waitAfterNavMs = options.waitAfterNavMs ?? DEFAULT_WAIT_AFTER_NAV_MS;
   const waitInputReadyMs = options.waitInputReadyMs ?? DEFAULT_WAIT_INPUT_READY_MS;
@@ -109,9 +109,9 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
   while (digits.length < 13 && digits.length >= 4) {
     digits = digits.slice(0, 4) + '9' + digits.slice(4);
   }
-
+  
   const url = `${WHATSAPP_WEB_SEND_URL}/?phone=${digits}`;
-
+  
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   } catch (err) {
@@ -121,19 +121,56 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
   await new Promise((r) => setTimeout(r, waitAfterNavMs));
 
   const input = await waitForMessageInput(page, Math.min(25000, timeoutMs - waitAfterNavMs - 3000));
+  
   if (!input) {
     try {
       const hasAlert = await page.$('div[role="alertdialog"]').then((e) => !!e);
       if (hasAlert) await page.keyboard.press('Escape');
       await new Promise((r) => setTimeout(r, 2000));
+      
       let retry = null;
       for (const sel of MESSAGE_INPUT_SELECTORS) {
         retry = await page.$(sel);
         if (retry) break;
       }
       if (retry) {
+        // Evaluate history
+        let chatTexts = [];
+        try {
+          const historyData = await page.evaluate(() => {
+            const msgs = document.querySelectorAll('div.message-in, div.message-out');
+            let texts = [];
+            for (const msg of msgs) {
+               const text = msg.textContent ? msg.textContent.trim() : '';
+               if (text.length > 0 && 
+                   !text.includes('criptografada') && 
+                   !text.includes('end-to-end') &&
+                   !text.includes('business')) {
+                  const sender = msg.classList.contains('message-out') ? 'Corretor' : 'Cliente';
+                  let dateStr = "";
+                  const copyable = msg.querySelector('[data-pre-plain-text]');
+                  if (copyable) {
+                      dateStr = copyable.getAttribute('data-pre-plain-text').replace(/[\[\]]/g, '').trim(); 
+                  }
+                  texts.push(`[${dateStr}] ${sender}: ${text}`);
+               }
+            }
+            return { texts: texts.slice(-15) };
+          });
+          chatTexts = historyData.texts || [];
+        } catch (err) {}
+
+        let resultMsg = typeof messageOrFn === 'function' ? await messageOrFn(chatTexts) : String(messageOrFn);
+        if (typeof resultMsg === 'object' && resultMsg !== null) {
+          if (resultMsg.action === 'SKIP') {
+            return { success: true, skipped: true, reason: resultMsg.reason };
+          }
+          resultMsg = resultMsg.message || '';
+        }
+        const finalMessage = String(resultMsg);
+
         await new Promise((r) => setTimeout(r, waitInputReadyMs));
-        await insertFullMessage(page, retry, message);
+        await insertFullMessage(page, retry, finalMessage);
         await new Promise((r) => setTimeout(r, waitAfterPasteMs));
         await page.keyboard.press('Enter');
         await new Promise((r) => setTimeout(r, waitAfterSendMs));
@@ -145,9 +182,46 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
     return { success: false, error: 'Message input not found after opening chat' };
   }
 
+  // Evaluate history normally
+  let chatTexts = [];
   try {
+    const historyData = await page.evaluate(() => {
+      const msgs = document.querySelectorAll('div.message-in, div.message-out');
+      let texts = [];
+      for (const msg of msgs) {
+         const text = msg.textContent ? msg.textContent.trim() : '';
+         if (text.length > 0 && 
+             !text.includes('criptografada') && 
+             !text.includes('end-to-end') &&
+             !text.includes('business')) {
+            const sender = msg.classList.contains('message-out') ? 'Corretor' : 'Cliente';
+            let dateStr = "";
+            const copyable = msg.querySelector('[data-pre-plain-text]');
+            if (copyable) {
+                dateStr = copyable.getAttribute('data-pre-plain-text').replace(/[\[\]]/g, '').trim(); 
+            }
+            texts.push(`[${dateStr}] ${sender}: ${text}`);
+         }
+      }
+      return { texts: texts.slice(-15) };
+    });
+    chatTexts = historyData.texts || [];
+  } catch (err) {
+    console.error("Error evaluating history:", err);
+  }
+
+  try {
+    let resultMsg = typeof messageOrFn === 'function' ? await messageOrFn(chatTexts) : String(messageOrFn);
+    if (typeof resultMsg === 'object' && resultMsg !== null) {
+      if (resultMsg.action === 'SKIP') {
+        return { success: true, skipped: true, reason: resultMsg.reason };
+      }
+      resultMsg = resultMsg.message || '';
+    }
+    const finalMessage = String(resultMsg);
+
     await new Promise((r) => setTimeout(r, waitInputReadyMs));
-    await insertFullMessage(page, input, message);
+    await insertFullMessage(page, input, finalMessage);
     await new Promise((r) => setTimeout(r, waitAfterPasteMs));
     await page.keyboard.press('Enter');
     await new Promise((r) => setTimeout(r, waitAfterSendMs));
@@ -167,17 +241,17 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, message, options 
  * WhatsApp Web tab is never navigated (avoids "Execution context was destroyed").
  * @param {import('puppeteer').Browser|import('puppeteer').Page} browserOrPage
  * @param {string} phoneDigits - E.164 digits only
- * @param {string} message - Full message text
+ * @param {string|Function} messageOrFn - Full message text OR function returning text based on history
  * @param {object} [options] - Same as openChatAndSendMessageOnPage
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-async function openChatAndSendMessage(browserOrPage, phoneDigits, message, options = {}) {
+async function openChatAndSendMessage(browserOrPage, phoneDigits, messageOrFn, options = {}) {
   const isBrowser = typeof browserOrPage.newPage === 'function';
   if (isBrowser) {
     let page;
     try {
       page = await browserOrPage.newPage();
-      return await openChatAndSendMessageOnPage(page, phoneDigits, message, options);
+      return await openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, options);
     } finally {
       if (page) {
         try {
@@ -186,7 +260,7 @@ async function openChatAndSendMessage(browserOrPage, phoneDigits, message, optio
       }
     }
   }
-  return await openChatAndSendMessageOnPage(browserOrPage, phoneDigits, message, options);
+  return await openChatAndSendMessageOnPage(browserOrPage, phoneDigits, messageOrFn, options);
 }
 
 module.exports = {

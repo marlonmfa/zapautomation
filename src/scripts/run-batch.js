@@ -12,7 +12,17 @@ const QRCode = require('qrcode');
 const { createClient } = require('../client');
 const { createQRServer } = require('../qr-server');
 const { runBatch } = require('../batch-sender');
-const { getBatchDelayRange, getBatchSendTimeoutMs, getBatchSkipIfEverSent, getSessionClientId } = require('../config');
+const {
+  getBatchDelayRange,
+  getBatchSendTimeoutMs,
+  getBatchSkipIfEverSent,
+  getSessionClientId,
+  getBatchRequireOptIn,
+  getBatchSuppressionFile,
+  getBatchMaxPerRun,
+  getBatchCooldown,
+  getBatchHealthStopRules,
+} = require('../config');
 
 /** Fixed port for QR page so the URL is predictable if the browser does not open automatically. */
 const QR_SERVER_PORT = 37830;
@@ -21,10 +31,12 @@ const args = process.argv.slice(2);
 const batchPath = args.find((a) => !a.startsWith('--'));
 const forceListOnly = args.includes('--force');
 const useApiSend = args.includes('--api');
+const pilotMode = args.includes('--pilot');
 if (useApiSend) process.env.BATCH_USE_BROWSER_SEND = 'false';
 if (!batchPath) {
-  console.error('Usage: node src/scripts/run-batch.js <path-to-batch.json> [--force]');
+  console.error('Usage: node src/scripts/run-batch.js <path-to-batch.json> [--force] [--pilot] [--api]');
   console.error('  --force  Enviar APENAS para a lista (não pula quem já recebeu; envia para todos no arquivo).');
+  console.error('  --pilot  Limita execução para um lote pequeno e gera relatório de saúde da campanha.');
   process.exit(1);
 }
 
@@ -47,6 +59,59 @@ if (!Array.isArray(items) || items.length === 0) {
   console.error('Batch file must be a non-empty array of { contact, message }.');
   process.exit(1);
 }
+
+function normalizeContactDigits(contact) {
+  return String(contact || '').replace(/@.*$/, '').replace(/\D/g, '');
+}
+
+function loadSuppressionSet() {
+  const suppressionPath = getBatchSuppressionFile();
+  if (!suppressionPath) return new Set();
+  const absoluteSuppressionPath = path.isAbsolute(suppressionPath)
+    ? suppressionPath
+    : path.join(process.cwd(), suppressionPath);
+  if (!fs.existsSync(absoluteSuppressionPath)) {
+    console.warn(`Aviso: BATCH_SUPPRESSION_FILE não encontrado: ${absoluteSuppressionPath}`);
+    return new Set();
+  }
+  try {
+    const raw = fs.readFileSync(absoluteSuppressionPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      console.warn('Aviso: arquivo de supressão deve ser um array JSON de números/ids.');
+      return new Set();
+    }
+    const set = new Set(parsed.map((v) => normalizeContactDigits(v)).filter(Boolean));
+    console.log(`Lista de supressão carregada: ${set.size} contato(s).`);
+    return set;
+  } catch (err) {
+    console.warn(`Aviso: falha ao ler lista de supressão (${err.message}).`);
+    return new Set();
+  }
+}
+
+function writeCampaignReport(report) {
+  try {
+    const reportDir = path.join(process.cwd(), 'reports');
+    fs.mkdirSync(reportDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const reportPath = path.join(reportDir, `batch-health-${stamp}.json`);
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    return reportPath;
+  } catch (err) {
+    console.warn(`Aviso: não foi possível salvar relatório: ${err.message}`);
+    return '';
+  }
+}
+
+const suppressionSet = loadSuppressionSet();
+items = items.map((item) => {
+  const digits = normalizeContactDigits(item && item.contact);
+  return {
+    ...item,
+    suppressed: digits ? suppressionSet.has(digits) : false,
+  };
+});
 
 // Single client = single browser session for the entire batch (all messages use this client).
 // headless: false so when session is active a browser window with WhatsApp Web is visible to confirm.
@@ -134,6 +199,12 @@ client.on('ready', async () => {
   const useBrowserSend = process.env.BATCH_USE_BROWSER_SEND !== 'false';
   const skipIfEverSent = forceListOnly ? false : getBatchSkipIfEverSent();
   const skipIfSentToday = skipIfEverSent;
+  const requireOptIn = getBatchRequireOptIn();
+  const maxPerRun = Math.max(0, getBatchMaxPerRun());
+  const cooldown = getBatchCooldown();
+  const stopRules = getBatchHealthStopRules();
+  const pilotCap = 50;
+  const runLimit = pilotMode ? (maxPerRun > 0 ? Math.min(maxPerRun, pilotCap) : pilotCap) : maxPerRun;
   if (useBrowserSend) {
     console.log('Modo: envio via navegador (digita a mensagem inteira antes de enviar).');
   }
@@ -141,6 +212,24 @@ client.on('ready', async () => {
     console.log('Modo: enviar apenas para a lista (todos os contatos do arquivo).');
   } else {
     console.log('Regra: envio apenas para quem ainda não recebeu; contatos que já receberam mensagem anteriormente são ignorados.');
+  }
+  if (requireOptIn) {
+    console.log('Regra de compliance: somente contatos com opt-in explícito serão enviados.');
+  }
+  if (pilotMode) {
+    console.log(`Modo piloto ativo: execução limitada a ${runLimit} contato(s) processados.`);
+  }
+  if (runLimit > 0 && !pilotMode) {
+    console.log(`Limite por execução ativo: até ${runLimit} contato(s) processados.`);
+  }
+  if (cooldown.every > 0) {
+    console.log(`Cooldown ativo: pausa aleatória de ${(cooldown.minMs / 1000).toFixed(0)}-${(cooldown.maxMs / 1000).toFixed(0)}s a cada ${cooldown.every} contatos processados.`);
+  }
+  if (stopRules.failRate > 0 && stopRules.minAttempts > 0) {
+    console.log(`Stop automático por falha: ${(stopRules.failRate * 100).toFixed(1)}% após ${stopRules.minAttempts} tentativas.`);
+  }
+  if (stopRules.blockLikeCount > 0) {
+    console.log(`Stop automático por erros críticos: ${stopRules.blockLikeCount} erro(s) com padrão de bloqueio.`);
   }
 
   try {
@@ -150,6 +239,14 @@ client.on('ready', async () => {
       useBrowserSend,
       skipIfEverSent,
       skipIfSentToday,
+      requireOptIn,
+      maxPerRun: runLimit,
+      cooldownEvery: cooldown.every,
+      cooldownMinMs: cooldown.minMs,
+      cooldownMaxMs: cooldown.maxMs,
+      stopFailRate: stopRules.failRate,
+      stopMinAttempts: stopRules.minAttempts,
+      stopBlockLikeCount: stopRules.blockLikeCount,
       onProgress: (current, total, contactId) => {
         // Progress is also emitted as contact_start in onStep
       },
@@ -162,14 +259,63 @@ client.on('ready', async () => {
     } else {
       console.log('Envio concluído. Enviados:', result.sent, 'Falhas:', result.failed);
     }
+    if (result.stoppedEarly) {
+      console.warn('Envio pausado automaticamente:', result.stopReason || 'guardrail acionado.');
+    }
     result.results.forEach((r) => {
       let suffix = '';
       if (r.retried > 0) suffix = ` (após ${r.retried} nova(s) tentativa(s))`;
       if (r.alreadySent) suffix = ' (já enviado; ignorado)';
       if (r.skippedSameDay) suffix = ' (já enviado hoje; ignorado)';
       if (r.skippedAlreadyReceived) suffix = ' (já recebeu anteriormente; ignorado)';
+      if (r.skippedOptOut) suffix = ' (opt-out; ignorado)';
+      if (r.skippedMissingConsent) suffix = ' (sem opt-in; ignorado)';
+      if (r.skippedSuppressionList) suffix = ' (lista de supressão; ignorado)';
       console.log(r.success ? `  OK ${r.contact}${suffix}` : `  FALHA ${r.contact}: ${r.error}`);
     });
+    const attempts = result.metrics?.attempts || 0;
+    const failRate = attempts > 0 ? ((result.metrics.failRate || 0) * 100).toFixed(2) : '0.00';
+    console.log('');
+    console.log('--- Saúde da campanha ---');
+    console.log(`Tentativas: ${attempts}`);
+    console.log(`Taxa de falha: ${failRate}%`);
+    console.log(`Erros com padrão de bloqueio: ${result.metrics?.blockLikeErrors || 0}`);
+    if (result.metrics?.skipped) {
+      const sk = result.metrics.skipped;
+      console.log(`Ignorados -> opt-out: ${sk.optOut}, sem opt-in: ${sk.missingConsent}, supressão: ${sk.suppressionList}, já receberam: ${sk.alreadyReceived}, hoje: ${sk.sentToday}`);
+    }
+    const report = {
+      generatedAt: new Date().toISOString(),
+      batchPath: absolutePath,
+      options: {
+        pilotMode,
+        useBrowserSend,
+        skipIfEverSent,
+        skipIfSentToday,
+        requireOptIn,
+        runLimit,
+        cooldown,
+        stopRules,
+      },
+      result,
+      recommendation: (() => {
+        const isHealthy = (result.metrics?.failRate || 0) <= 0.1 && (result.metrics?.blockLikeErrors || 0) === 0;
+        if (!isHealthy) {
+          return {
+            healthy: false,
+            action: 'Do not scale volume. Review list quality, message copy, and cadence before next run.',
+          };
+        }
+        const currentBase = runLimit > 0 ? runLimit : items.length;
+        return {
+          healthy: true,
+          action: 'Scale carefully in the next run.',
+          suggestedNextMaxPerRun: Math.max(1, Math.floor(currentBase * 1.25)),
+        };
+      })(),
+    };
+    const reportPath = writeCampaignReport(report);
+    if (reportPath) console.log(`Relatório salvo em: ${reportPath}`);
     process.exit(result.failed > 0 ? 1 : 0);
   } catch (err) {
     console.error('Batch run error:', err.message || err);

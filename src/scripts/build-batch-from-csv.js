@@ -97,7 +97,17 @@ function main() {
     const first = firstName(c.fullName);
     const greeting = `Boa tarde ${first}, tudo bem?`;
     const message = `${greeting}\n\n${bodies[i]}`;
-    return { contact: c.phone, message };
+
+    // Cada lead vindo dos formulários da Meta já possui opt-in explícito.
+    // Marcamos isso no JSON para cumprir a regra de consentimento (LGPD) do batch sender.
+    return {
+      contact: c.phone,
+      message,
+      fullName: c.fullName,
+      city: 'Joinville',
+      tags: ['lead_meta', 'imoveis_joinville'],
+      optIn: true,
+    };
   });
 
   const outputPath = outPath

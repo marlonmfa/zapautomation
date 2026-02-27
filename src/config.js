@@ -9,6 +9,22 @@ const BATCH_DELAY_MAX_MS = parseInt(process.env.BATCH_DELAY_MAX_MS || '7000', 10
 const BATCH_SEND_TIMEOUT_MS = parseInt(process.env.BATCH_SEND_TIMEOUT_MS || '15000', 10);
 /** When 'false', send to all contacts (do not skip those who already received a message). Default: 'true' */
 const BATCH_SKIP_IF_EVER_SENT = process.env.BATCH_SKIP_IF_EVER_SENT !== 'false';
+const BATCH_REQUIRE_OPT_IN = process.env.BATCH_REQUIRE_OPT_IN === 'true';
+const BATCH_SUPPRESSION_FILE = (process.env.BATCH_SUPPRESSION_FILE || '').trim();
+const BATCH_MAX_PER_RUN = parseInt(process.env.BATCH_MAX_PER_RUN || '0', 10);
+const BATCH_COOLDOWN_EVERY = parseInt(process.env.BATCH_COOLDOWN_EVERY || '0', 10);
+const BATCH_COOLDOWN_MIN_MS = parseInt(process.env.BATCH_COOLDOWN_MIN_MS || '90000', 10);
+const BATCH_COOLDOWN_MAX_MS = parseInt(process.env.BATCH_COOLDOWN_MAX_MS || '180000', 10);
+const BATCH_STOP_FAIL_RATE = parseFloat(process.env.BATCH_STOP_FAIL_RATE || '0.25');
+const BATCH_STOP_MIN_ATTEMPTS = parseInt(process.env.BATCH_STOP_MIN_ATTEMPTS || '20', 10);
+const BATCH_BLOCKLIKE_STOP_COUNT = parseInt(process.env.BATCH_BLOCKLIKE_STOP_COUNT || '5', 10);
+const ENABLE_FIRST_CONTACT_AGENT = process.env.ENABLE_FIRST_CONTACT_AGENT === 'true' || process.env.ENABLE_FIRST_CONTACT_AGENT === '1';
+const FIRST_CONTACT_CONFIDENCE_THRESHOLD = parseFloat(process.env.FIRST_CONTACT_CONFIDENCE_THRESHOLD || '0.72');
+const FIRST_CONTACT_REPLY_DELAY_MIN_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MIN_MS || '1500', 10);
+const FIRST_CONTACT_REPLY_DELAY_MAX_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MAX_MS || '5000', 10);
+const FIRST_CONTACT_MEMORY_PATH = process.env.FIRST_CONTACT_MEMORY_PATH || 'data/first-contact-memory.json';
+const FIRST_CONTACT_DECISIONS_LOG_PATH = process.env.FIRST_CONTACT_DECISIONS_LOG_PATH || 'data/first-contact-decisions.jsonl';
+const FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE = process.env.FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE !== 'false';
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
@@ -43,6 +59,61 @@ function getBatchSendTimeoutMs() {
 
 function getBatchSkipIfEverSent() {
   return BATCH_SKIP_IF_EVER_SENT;
+}
+
+function getBatchRequireOptIn() {
+  return BATCH_REQUIRE_OPT_IN;
+}
+
+function getBatchSuppressionFile() {
+  return BATCH_SUPPRESSION_FILE;
+}
+
+function getBatchMaxPerRun() {
+  return Number.isFinite(BATCH_MAX_PER_RUN) ? BATCH_MAX_PER_RUN : 0;
+}
+
+function getBatchCooldown() {
+  return {
+    every: Number.isFinite(BATCH_COOLDOWN_EVERY) ? BATCH_COOLDOWN_EVERY : 0,
+    minMs: Number.isFinite(BATCH_COOLDOWN_MIN_MS) ? BATCH_COOLDOWN_MIN_MS : 90000,
+    maxMs: Number.isFinite(BATCH_COOLDOWN_MAX_MS) ? BATCH_COOLDOWN_MAX_MS : 180000,
+  };
+}
+
+function getBatchHealthStopRules() {
+  return {
+    failRate: Number.isFinite(BATCH_STOP_FAIL_RATE) ? BATCH_STOP_FAIL_RATE : 0.25,
+    minAttempts: Number.isFinite(BATCH_STOP_MIN_ATTEMPTS) ? BATCH_STOP_MIN_ATTEMPTS : 20,
+    blockLikeCount: Number.isFinite(BATCH_BLOCKLIKE_STOP_COUNT) ? BATCH_BLOCKLIKE_STOP_COUNT : 5,
+  };
+}
+
+function isFirstContactAgentEnabled() {
+  return ENABLE_FIRST_CONTACT_AGENT;
+}
+
+function getFirstContactConfidenceThreshold() {
+  return Number.isFinite(FIRST_CONTACT_CONFIDENCE_THRESHOLD) ? FIRST_CONTACT_CONFIDENCE_THRESHOLD : 0.72;
+}
+
+function getFirstContactReplyDelayRange() {
+  return {
+    minMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MIN_MS) ? FIRST_CONTACT_REPLY_DELAY_MIN_MS : 1500,
+    maxMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MAX_MS) ? FIRST_CONTACT_REPLY_DELAY_MAX_MS : 5000,
+  };
+}
+
+function getFirstContactMemoryPath() {
+  return FIRST_CONTACT_MEMORY_PATH;
+}
+
+function getFirstContactDecisionsLogPath() {
+  return FIRST_CONTACT_DECISIONS_LOG_PATH;
+}
+
+function getFirstContactRequireHumanForSensitive() {
+  return FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE;
 }
 
 function getPuppeteerExecutablePath() {
@@ -87,6 +158,17 @@ module.exports = {
   getBatchDelayRange,
   getBatchSendTimeoutMs,
   getBatchSkipIfEverSent,
+  getBatchRequireOptIn,
+  getBatchSuppressionFile,
+  getBatchMaxPerRun,
+  getBatchCooldown,
+  getBatchHealthStopRules,
+  isFirstContactAgentEnabled,
+  getFirstContactConfidenceThreshold,
+  getFirstContactReplyDelayRange,
+  getFirstContactMemoryPath,
+  getFirstContactDecisionsLogPath,
+  getFirstContactRequireHumanForSensitive,
   getPuppeteerExecutablePath,
   getOpenAiApiKey,
   getElevenLabsApiKey,
@@ -95,4 +177,20 @@ module.exports = {
   BATCH_DELAY_MIN_MS,
   BATCH_DELAY_MAX_MS,
   BATCH_SEND_TIMEOUT_MS,
+  BATCH_REQUIRE_OPT_IN,
+  BATCH_SUPPRESSION_FILE,
+  BATCH_MAX_PER_RUN,
+  BATCH_COOLDOWN_EVERY,
+  BATCH_COOLDOWN_MIN_MS,
+  BATCH_COOLDOWN_MAX_MS,
+  BATCH_STOP_FAIL_RATE,
+  BATCH_STOP_MIN_ATTEMPTS,
+  BATCH_BLOCKLIKE_STOP_COUNT,
+  ENABLE_FIRST_CONTACT_AGENT,
+  FIRST_CONTACT_CONFIDENCE_THRESHOLD,
+  FIRST_CONTACT_REPLY_DELAY_MIN_MS,
+  FIRST_CONTACT_REPLY_DELAY_MAX_MS,
+  FIRST_CONTACT_MEMORY_PATH,
+  FIRST_CONTACT_DECISIONS_LOG_PATH,
+  FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE,
 };

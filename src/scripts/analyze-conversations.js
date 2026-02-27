@@ -8,7 +8,6 @@
  *
  * --open         Abre o navegador visível (Puppeteer headless: false)
  * --debug        Log de debug para diagnóstico de chats não encontrados
- * --extract-only Apenas extrai as mensagens (conversa completa), sem análise/tabela/next step
  *
  * Requires OPENAI_API_KEY in .env for AI analysis. Without it, outputs raw message summary.
  */
@@ -515,8 +514,7 @@ PROXIMA_ETAPA: ...`,
 
 async function main() {
   const rawArgs = process.argv.slice(2);
-  const extractOnly = rawArgs.includes('--extract-only') || process.env.ANALYZE_EXTRACT_ONLY === '1';
-  const args = rawArgs.filter((a) => a !== '--open' && a !== '--debug' && a !== '--extract-only');
+  const args = rawArgs.filter((a) => a !== '--open' && a !== '--debug');
   let items;
   let outPath;
   const numberArg = args.find((a) => a === '--number');
@@ -561,7 +559,7 @@ async function main() {
   }
 
   console.log('--- Análise de Conversas ---');
-  if (!extractOnly && !(process.env.OPENAI_API_KEY || '').trim()) {
+  if (!(process.env.OPENAI_API_KEY || '').trim()) {
     console.log('(Sem OPENAI_API_KEY: análise será resumo das mensagens. Configure para análise IA com próxima etapa.)');
   }
   const openBrowser = rawArgs.includes('--open') || process.env.ANALYZE_OPEN === '1';
@@ -586,7 +584,7 @@ async function main() {
   await sleep(120);
 
   const rows = [];
-  const hasOpenAI = !extractOnly && !!(process.env.OPENAI_API_KEY || '').trim();
+  const hasOpenAI = !!(process.env.OPENAI_API_KEY || '').trim();
   const debug = process.env.DEBUG_ANALYZE === '1' || rawArgs.includes('--debug');
 
   for (let i = 0; i < items.length; i++) {
@@ -605,7 +603,7 @@ async function main() {
     let context = '';
     let proximaEtapa = '';
 
-    if (!extractOnly && hasOpenAI && thread) {
+    if (hasOpenAI && thread) {
       const analysis = await analyzeWithAI(thread, name);
       if (analysis) {
         const ctx = analysis.match(/CONTEXTO:?\s*(.+?)(?=PROXIMA_ETAPA|$)/is);
@@ -614,11 +612,11 @@ async function main() {
         proximaEtapa = next ? next[1].trim().replace(/\s+/g, ' ') : '';
       }
     }
-    if (!extractOnly && !context && thread) {
+    if (!context && thread) {
       const maxLen = items.length === 1 ? 800 : 150;
       context = thread.slice(0, maxLen).replace(/\n/g, ' | ') + (thread.length > maxLen ? '...' : '');
     }
-    if (!extractOnly && !proximaEtapa) {
+    if (!proximaEtapa) {
       proximaEtapa = messages.length === 0 ? 'Sem histórico - iniciar conversa' : 'Analisar e definir próxima ação';
     }
 
@@ -634,42 +632,42 @@ async function main() {
   );
   const csv = [csvHeaders, ...csvRows].join('\n');
 
-  const mdTable = extractOnly
-    ? ''
-    : [
-        items.length === 1 ? '**As mensagens coletadas estão na seção « Conversa completa » abaixo.**\n' : '',
-        '| Contato | Nome | Contexto | Próxima Etapa | Msgs |',
-        '|---------|------|----------|---------------|------|',
-        ...rows.map((r) => {
-          const maxCtx = items.length === 1 ? 500 : 80;
-          const maxNext = items.length === 1 ? 200 : 60;
-          const ctx = r.context.length > maxCtx ? r.context.slice(0, maxCtx) + '...' : r.context;
-          const next = r.proximaEtapa.length > maxNext ? r.proximaEtapa.slice(0, maxNext) + '...' : r.proximaEtapa;
-          return `| ${r.contact} | ${r.name} | ${ctx} | ${next} | ${r.qtdMensagens} |`;
-        }),
-      ].join('\n');
+  const md = [
+    items.length === 1 ? '**As mensagens coletadas estão na seção « Conversa completa » abaixo.**\n' : '',
+    '| Contato | Nome | Contexto | Próxima Etapa | Msgs |',
+    '|---------|------|----------|---------------|------|',
+    ...rows.map((r) => {
+      const maxCtx = items.length === 1 ? 500 : 80;
+      const maxNext = items.length === 1 ? 200 : 60;
+      const ctx = r.context.length > maxCtx ? r.context.slice(0, maxCtx) + '...' : r.context;
+      const next = r.proximaEtapa.length > maxNext ? r.proximaEtapa.slice(0, maxNext) + '...' : r.proximaEtapa;
+      return `| ${r.contact} | ${r.name} | ${ctx} | ${next} | ${r.qtdMensagens} |`;
+    }),
+  ].join('\n');
 
   if (outPath) {
     const abs = path.isAbsolute(outPath) ? outPath : path.join(process.cwd(), outPath);
     fs.writeFileSync(abs, csv, 'utf8');
     const mdPath = abs.replace(/\.csv$/i, '.md');
-    let mdContent = mdTable;
+    let mdContent = md;
     if (items.length === 1) {
-      mdContent = buildSingleNumberMdContent({
-        mdTable,
-        fullThread: rows[0]?.fullThread,
-        qtdMensagens: rows[0]?.qtdMensagens ?? 0,
-        extractOnly,
-      });
+      const fullThread = rows[0]?.fullThread;
+      const qtd = rows[0]?.qtdMensagens ?? 0;
+      mdContent += '\n\n---\n\n## Conversa completa (' + qtd + ' mensagens)\n\n';
+      if (fullThread && fullThread.trim()) {
+        mdContent += '```\n' + fullThread + '\n```\n';
+      } else {
+        mdContent += '```\nNenhuma mensagem coletada. (Abra o chat, clique em "Carregar mensagens mais antigas" e rode de novo.)\n```\n';
+      }
     }
     fs.writeFileSync(mdPath, mdContent, 'utf8');
     console.log('\nArquivos gerados:', abs, 'e', mdPath);
   }
 
-  const sendTo = extractOnly ? '' : (process.env.REPORT_SEND_TO || '').trim().replace(/\D/g, '');
+  const sendTo = (process.env.REPORT_SEND_TO || '').trim().replace(/\D/g, '');
   if (sendTo) {
     const destDigits = ensureBrazilian13Digits(sendTo.startsWith('55') ? sendTo : '55' + sendTo);
-    const msgToSend = `📋 *Relatório de Análise*\n\n${mdTable}${rows[0]?.fullThread ? `\n\n📩 _Conversa completa:_\n${rows[0].fullThread}` : ''}`;
+    const msgToSend = `📋 *Relatório de Análise*\n\n${md}${rows[0]?.fullThread ? `\n\n📩 _Conversa completa:_\n${rows[0].fullThread}` : ''}`;
     try {
       const destId = destDigits + '@c.us';
       const chatId = await resolveChatId(client, destId);
@@ -689,10 +687,8 @@ async function main() {
     }
   }
 
-  if (!extractOnly) {
-    console.log('\n--- Tabela de Análise ---\n');
-    console.log(mdTable);
-  }
+  console.log('\n--- Tabela de Análise ---\n');
+  console.log(md);
   console.log('\n--- Fim ---');
 }
 
@@ -701,26 +697,11 @@ function escapeCsv(val) {
   return s.includes(';') || s.includes('\n') ? `"${s}"` : s;
 }
 
-function buildSingleNumberMdContent({ mdTable, fullThread, qtdMensagens, extractOnly }) {
-  const qtd = qtdMensagens ?? 0;
-  const header = '## Conversa completa (' + qtd + ' mensagens)\n\n';
-  const body = fullThread && String(fullThread).trim()
-    ? '```\n' + fullThread + '\n```\n'
-    : '```\nNenhuma mensagem coletada. (Abra o chat, clique em "Carregar mensagens mais antigas" e rode de novo.)\n```\n';
-
-  if (extractOnly) return header + body;
-  return String(mdTable || '') + '\n\n---\n\n' + header + body;
-}
-
-if (require.main === module) {
-  main().catch((err) => {
-    const msg = err.message || err;
-    console.error('Erro:', msg);
-    if (String(msg).includes('already running')) {
-      console.error('\nDica: Feche todas as janelas do Chrome e rode de novo, ou execute: npm run kill-chrome');
-    }
-    process.exit(1);
-  });
-}
-
-module.exports = { buildSingleNumberMdContent };
+main().catch((err) => {
+  const msg = err.message || err;
+  console.error('Erro:', msg);
+  if (String(msg).includes('already running')) {
+    console.error('\nDica: Feche todas as janelas do Chrome e rode de novo, ou execute: npm run kill-chrome');
+  }
+  process.exit(1);
+});

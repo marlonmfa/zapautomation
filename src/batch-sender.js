@@ -22,6 +22,43 @@ function sleep(ms) {
 }
 
 /**
+ * Errors that should not be retried because they are likely permanent for this recipient/campaign.
+ * @param {string} errMsg
+ * @returns {boolean}
+ */
+function isPermanentSendError(errMsg) {
+  const m = String(errMsg || '').toLowerCase();
+  if (!m) return false;
+  return (
+    m.includes('not a whatsapp user') ||
+    m.includes('invalid wid') ||
+    m.includes('invalid') ||
+    m.includes('opt-out') ||
+    m.includes('opt out') ||
+    m.includes('blocked') ||
+    m.includes('forbidden')
+  );
+}
+
+/**
+ * Errors that look like account/risk issues and should increment block-like counters.
+ * @param {string} errMsg
+ * @returns {boolean}
+ */
+function isBlockLikeError(errMsg) {
+  const m = String(errMsg || '').toLowerCase();
+  if (!m) return false;
+  return (
+    m.includes('blocked') ||
+    m.includes('spam') ||
+    m.includes('temporarily unavailable') ||
+    m.includes('too many') ||
+    m.includes('rate limit') ||
+    m.includes('429')
+  );
+}
+
+/**
  * Run a promise with a timeout; rejects with Error('Send timeout') if not settled in time.
  * @param {Promise} promise
  * @param {number} ms
@@ -299,6 +336,10 @@ async function sendAndVerify(client, contactId, message, opts = {}) {
       }
       if (lastError) {
         onStep({ type: 'send_fail', contactId, attempt, error: lastError });
+        if (isPermanentSendError(lastError)) {
+          onStep({ type: 'done', contactId, success: false, error: lastError, retryable: false });
+          return { success: false, error: lastError, retryable: false };
+        }
         if (attempt === maxVerifyRetries) return { success: false, error: lastError };
         await sleep(verifyDelayMs);
         onStep({ type: 'reattempt', contactId, nextAttempt: attempt + 1 });
@@ -372,15 +413,63 @@ async function runBatch(client, items, options = {}) {
   const useBrowserSend = options.useBrowserSend === true;
   const skipIfEverSent = options.skipIfEverSent !== false;
   const skipIfSentToday = options.skipIfSentToday !== false;
+  const requireOptIn = options.requireOptIn === true;
+  const maxPerRun = Number.isFinite(options.maxPerRun) ? options.maxPerRun : 0;
+  const cooldownEvery = Number.isFinite(options.cooldownEvery) ? options.cooldownEvery : 0;
+  const cooldownMinMs = Number.isFinite(options.cooldownMinMs) ? options.cooldownMinMs : 0;
+  const cooldownMaxMs = Number.isFinite(options.cooldownMaxMs) ? options.cooldownMaxMs : 0;
+  const stopFailRate = Number.isFinite(options.stopFailRate) ? options.stopFailRate : 0;
+  const stopMinAttempts = Number.isFinite(options.stopMinAttempts) ? options.stopMinAttempts : 0;
+  const stopBlockLikeCount = Number.isFinite(options.stopBlockLikeCount) ? options.stopBlockLikeCount : 0;
 
   const results = [];
   let sent = 0;
   let failed = 0;
   const total = items.length;
+  let attempts = 0;
+  let blockLikeErrors = 0;
+  let stoppedEarly = false;
+  let stopReason = '';
+  let processedCount = 0;
+  const skipped = {
+    optOut: 0,
+    missingConsent: 0,
+    suppressionList: 0,
+    alreadyReceived: 0,
+    sentToday: 0,
+  };
 
   for (let i = 0; i < total; i++) {
+    if (maxPerRun > 0 && processedCount >= maxPerRun) {
+      stoppedEarly = true;
+      stopReason = `Stopped by maxPerRun limit (${maxPerRun}).`;
+      break;
+    }
+
     const { contact, message } = items[i];
+    const optIn = items[i] && (items[i].optIn === true || items[i].consented === true || items[i].hasConsent === true);
+    const optedOut = items[i] && (items[i].optOut === true || items[i].unsubscribed === true);
+    const suppressed = items[i] && items[i].suppressed === true;
     const contactId = normalizeContactId(contact);
+
+    if (optedOut) {
+      skipped.optOut++;
+      results.push({ contact: contactId, success: true, skippedOptOut: true });
+      onStep({ type: 'already_sent', contactId, reason: 'Contato marcado como opt-out; ignorado.' });
+      continue;
+    }
+    if (suppressed) {
+      skipped.suppressionList++;
+      results.push({ contact: contactId, success: true, skippedSuppressionList: true });
+      onStep({ type: 'already_sent', contactId, reason: 'Contato presente na lista de supressão; ignorado.' });
+      continue;
+    }
+    if (requireOptIn && !optIn) {
+      skipped.missingConsent++;
+      results.push({ contact: contactId, success: true, skippedMissingConsent: true });
+      onStep({ type: 'already_sent', contactId, reason: 'Contato sem consentimento explícito (opt-in); ignorado.' });
+      continue;
+    }
 
     const delay = randomDelayMs(minDelayMs, maxDelayMs);
     await sleep(delay);
@@ -402,6 +491,7 @@ async function runBatch(client, items, options = {}) {
           reason: 'Contato já recebeu mensagem anteriormente; ignorado (apenas quem ainda não recebeu).',
         });
         results.push({ contact: contactId, success: true, skippedAlreadyReceived: true });
+        skipped.alreadyReceived++;
         continue;
       }
     } else if (skipIfSentToday) {
@@ -413,10 +503,12 @@ async function runBatch(client, items, options = {}) {
           reason: 'Última mensagem já enviada hoje; ignorado (um envio por contato por dia).',
         });
         results.push({ contact: contactId, success: true, skippedSameDay: true });
+        skipped.sentToday++;
         continue;
       }
     }
 
+    attempts++;
     let result;
     if (useBrowserSend) {
       onStep({ type: 'attempt_start', contactId, attempt: 0, maxAttempts: 1 });
@@ -449,10 +541,49 @@ async function runBatch(client, items, options = {}) {
     } else {
       results.push({ contact: contactId, success: false, error: result.error });
       failed++;
+      if (isBlockLikeError(result.error)) blockLikeErrors++;
+    }
+    processedCount++;
+
+    if (cooldownEvery > 0 && processedCount > 0 && processedCount % cooldownEvery === 0) {
+      const coolMs = randomDelayMs(Math.max(0, cooldownMinMs), Math.max(cooldownMinMs, cooldownMaxMs));
+      onStep({ type: 'cooldown', reason: `Cooldown após ${processedCount} envios processados.`, cooldownMs: coolMs });
+      await sleep(coolMs);
+    }
+
+    if (
+      stopFailRate > 0 &&
+      stopMinAttempts > 0 &&
+      attempts >= stopMinAttempts &&
+      failed / attempts >= stopFailRate
+    ) {
+      stoppedEarly = true;
+      stopReason = `Stopped by fail-rate guardrail (${(failed / attempts * 100).toFixed(1)}% >= ${(stopFailRate * 100).toFixed(1)}%).`;
+      break;
+    }
+
+    if (stopBlockLikeCount > 0 && blockLikeErrors >= stopBlockLikeCount) {
+      stoppedEarly = true;
+      stopReason = `Stopped by block-like errors guardrail (${blockLikeErrors}/${stopBlockLikeCount}).`;
+      break;
     }
   }
 
-  return { sent, failed, results };
+  return {
+    sent,
+    failed,
+    results,
+    metrics: {
+      totalItems: total,
+      attempts,
+      processedCount,
+      failRate: attempts > 0 ? failed / attempts : 0,
+      blockLikeErrors,
+      skipped,
+    },
+    stoppedEarly,
+    stopReason,
+  };
 }
 
 module.exports = {
@@ -468,6 +599,8 @@ module.exports = {
   getLastMessageFromMe,
   getLastMessageFromMeWithDate,
   isTodayUnix,
+  isPermanentSendError,
+  isBlockLikeError,
   sendViaBrowser,
   sendOnce,
   sendAndVerify,
