@@ -4,6 +4,30 @@ const { createMemoryService } = require('./contact-memory');
 const { appendDecision } = require('./decision-logger');
 const { detectIntentByRules, getNextState, INTENTS, STATES } = require('./first-contact-policy');
 
+/** Mensagem ao encerrar após qualificação + condições (vai fazer simulação). */
+const QUALIFICATION_CLOSING_MESSAGE = 'Vou fazer a simulação com os dados que você passou. Em breve um corretor da Aptom Imóveis entra em contato com o resultado (entrada e parcelas).';
+
+/** Mensagem de apresentação já enviada pelo batch; só apresentação. */
+const PRESENTATION_ALREADY_SENT = 'Oi, tudo bem? Aqui é o Lucas, da Aptom Imóveis em Joinville.';
+
+/** Persona: atendente personalizado, fluxo busca → simulação → condições → encerrar. */
+const ATTENDANT_PERSONA = `Você é o Lucas, atendente da Aptom Imóveis em Joinville, Santa Catarina.
+CONTEXTO: Atuamos apenas com VENDA de imóveis (compra e venda). Não temos locação; se perguntarem por aluguel, diga educadamente que trabalhamos só com compra e venda em Joinville/SC.
+
+Fluxo do atendimento (siga nesta ordem, de forma natural):
+1) Entender o que o cliente busca: para morar ou investir, tipo de imóvel, bairro/região, faixa de valor, prazo. Pergunte e comente na ordem que fizer sentido.
+2) Quando já tiver uma boa noção do que ele quer, INDUZA a fazer uma simulação de financiamento: explique que com uma simulação ele tem uma base de quanto ficaria a entrada e as parcelas. Convide de forma natural.
+3) Filtre as condições para a simulação: renda, valor de entrada que tem ou pretende dar, se vai usar FGTS, se tem mais de 3 anos de carteira assinada (ou CLT). Essas informações personalizam o atendimento e a simulação. Pergunte uma coisa de cada vez, de forma leve.
+4) Quando tiver as informações de busca e as condições (renda, entrada, FGTS, carteira), finalize dizendo que vai fazer a simulação e que em breve um corretor entra em contato com o resultado. Não diga que vai encaminhar antes de ter essas informações.
+
+Regras:
+- NUNCA diga que vai encaminhar para um corretor ou humano até o sistema avisar que a qualificação está completa (busca + condições).
+- Uma pergunta ou comentário por vez, tom educado e humano. Português do Brasil, respostas curtas (1–2 frases), sem prefixos.
+
+Comunicação natural:
+- Evite repetir "Entendi", "Perfeito", "Certo" no início. Varie: vá direto à pergunta, repita em uma palavra o que a pessoa disse, ou um comentário curto e depois a pergunta.
+- Fale como no WhatsApp: direto, pode usar "né", "pra", "tá" quando soar natural.`;
+
 const CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const DEFAULT_MODEL = 'gpt-4o-mini';
 
@@ -29,10 +53,86 @@ function detectPendingFields(intent, text) {
   return fields;
 }
 
+/**
+ * Extrai dados de qualificação da última mensagem do cliente e preenche o que faltar no contato.
+ * @param {string} text - conteúdo da mensagem
+ * @param {object} contact - contato com contact.qualification
+ * @param {function} updateQualification - (contactId, field, value) => void
+ * @param {string} contactId
+ */
+function extractQualificationFromText(text, contact, updateQualification, contactId) {
+  const t = String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const q = contact.qualification || {};
+
+  if (!q.objetivo && /(morar|residir|proprio|1o imovel|primeiro imovel|pra mim)/.test(t)) {
+    updateQualification(contactId, 'objetivo', 'morar');
+  }
+  if (!q.objetivo && /(investir|renda|aluguel|valoriz|revender)/.test(t)) {
+    updateQualification(contactId, 'objetivo', 'investir');
+  }
+
+  if (!q.tipoImovel && /(apartamento|apto|ap\s|ap,)/.test(t)) {
+    updateQualification(contactId, 'tipoImovel', 'apartamento');
+  }
+  if (!q.tipoImovel && /(casa|sobrado)/.test(t)) {
+    updateQualification(contactId, 'tipoImovel', 'casa');
+  }
+  if (!q.tipoImovel && /(sala|comercial|galpao|galpão)/.test(t)) {
+    updateQualification(contactId, 'tipoImovel', 'comercial');
+  }
+  if (!q.tipoImovel && /terreno/.test(t)) {
+    updateQualification(contactId, 'tipoImovel', 'terreno');
+  }
+
+  if (!q.bairroRegiao && /(bairro|região|regiao|centro|america|anita|zona norte|sul|bom retiro|gloria|atirradouro|iririú|iririu|costa e silva|jardim sofia)/.test(t)) {
+    const slice = String(text || '').trim().slice(0, 150);
+    updateQualification(contactId, 'bairroRegiao', slice || 'região informada');
+  }
+
+  if (!q.faixaValor && (/\d{2,3}\s*k|\d+\.?\d*\s*mil|\d{1,3}(\.\d{3})*\s*reais|até\s*\d|ate\s*\d|orcamento|orçamento|entrada|faixa/.test(t) || /\d{5,}/.test(t))) {
+    const slice = String(text || '').trim().slice(0, 80);
+    updateQualification(contactId, 'faixaValor', slice || 'faixa informada');
+  }
+
+  if (!q.prazo && /(urgente|logo|agora|alguns meses|3\s*meses|6\s*meses|ano que vem|1\s*ano|longo prazo|curto prazo)/.test(t)) {
+    const slice = String(text || '').trim().slice(0, 80);
+    updateQualification(contactId, 'prazo', slice || 'prazo informado');
+  }
+
+  if (!q.renda && (/\d{2,3}\s*k|\d+\.?\d*\s*mil|\d{1,3}(\.\d{3})*\s*reais|ganho|recebo|salario|salário|renda|bruto|líquido/.test(t) || /\d{4,}/.test(t))) {
+    const slice = String(text || '').trim().slice(0, 80);
+    updateQualification(contactId, 'renda', slice || 'renda informada');
+  }
+  if (!q.valorEntrada && /(entrada|dar\s*de\s*entrada|tenho\s*\d|junto\s*\d|reserva|economia)/.test(t)) {
+    const slice = String(text || '').trim().slice(0, 80);
+    updateQualification(contactId, 'valorEntrada', slice || 'entrada informada');
+  }
+  if (!q.usaFGTS && /(fgts|f\.g\.t\.s|fundos\s*de\s*garantia)/.test(t)) {
+    if (/(não|nao|sem\s*fgts|não\s*tenho)/.test(t)) updateQualification(contactId, 'usaFGTS', 'não');
+    else updateQualification(contactId, 'usaFGTS', 'sim');
+  }
+  if (!q.carteiraAssinada && /(carteira|clt|emprego|empregado|assinada|3\s*anos|mais\s*de\s*3)/.test(t)) {
+    if (/(não|nao|autônomo|autonomo|pj)/.test(t)) updateQualification(contactId, 'carteiraAssinada', 'não ou menos de 3 anos');
+    else updateQualification(contactId, 'carteiraAssinada', 'sim, 3+ anos');
+  }
+}
+
+const MISSING_TOPIC_LABELS = {
+  objetivo: 'objetivo (morar ou investir)',
+  tipoImovel: 'tipo de imóvel',
+  bairroRegiao: 'bairro ou região',
+  faixaValor: 'faixa de valor',
+  prazo: 'prazo para compra',
+  renda: 'renda (para simulação de financiamento)',
+  valorEntrada: 'valor de entrada que tem ou pretende dar',
+  usaFGTS: 'se pretende usar FGTS',
+  carteiraAssinada: 'se tem mais de 3 anos com carteira assinada (CLT)',
+};
+
 function buildFallbackReply(intent, contact) {
   switch (intent) {
     case INTENTS.GREETING:
-      return 'Oi! Tudo bem? Sou do time imobiliário em Joinville. Posso te ajudar com preço, localização, disponibilidade, financiamento ou documentação. Sobre o que você quer saber primeiro?';
+      return 'Que bom falar com você! O que te fez buscar imóvel agora?';
     case INTENTS.PRICE:
       return 'Claro! Posso te ajudar com valores. Você já tem uma faixa de preço em mente para eu te orientar melhor?';
     case INTENTS.LOCATION:
@@ -55,7 +155,7 @@ function buildFallbackReply(intent, contact) {
   }
 }
 
-async function generateReplyWithAI({ thread, intent, summary }) {
+async function generateReplyWithAI({ thread, intent, summary, qualificationCollected, missingTopics, phaseHint = '' }) {
   const key = (() => {
     try {
       return getOpenAiApiKey();
@@ -65,20 +165,19 @@ async function generateReplyWithAI({ thread, intent, summary }) {
   })();
   if (!key) return '';
 
-  const systemPrompt = `Você é um corretor imobiliário humano de primeiro contato via WhatsApp, especializado em Joinville/SC.
-Objetivo: acolher o cliente, entender perfil e estágio da compra e dar os próximos passos com clareza.
-Regras:
-- português do Brasil, tom educado e direto, sem formalidade excessiva
-- no máximo 2 frases curtas por resposta
-- faça no máximo 1 pergunta por mensagem
-- sempre que possível, confirme: tipo de imóvel (apartamento, casa, sala comercial), faixa de valor aproximada e bairro/região de interesse em Joinville
-- para investidores, pergunte sobre objetivo (renda, valorização, curto ou longo prazo)
-- não force visita; apenas sugira quando o cliente demonstrar interesse claro
-- não prometa condições específicas (taxas, aprovação, descontos) sem ter certeza
-- se o cliente sinalizar que quer falar com um humano ou marcar visita, deixe claro que um especialista da imobiliária vai entrar em contato
-- intenção detectada: ${intent}
-- contexto resumido: ${summary || 'sem resumo prévio'}
-Retorne apenas a mensagem final.`;
+  const topicsHint = missingTopics && missingTopics.length > 0
+    ? `Ainda pode ser útil entender: ${missingTopics.join(', ')}. Traga na conversa quando fizer sentido.`
+    : '';
+
+  const systemPrompt = `${ATTENDANT_PERSONA}
+
+Este contato já recebeu a mensagem de apresentação. Não se apresente de novo; continue a conversa de forma natural.
+
+O que já sabemos sobre o cliente: ${qualificationCollected || 'nada ainda'}.${phaseHint || ''}
+${topicsHint ? topicsHint + '\n' : ''}
+Intenção da última mensagem: ${intent}. Contexto geral: ${summary || 'sem resumo prévio'}.
+
+Responda em uma ou duas frases curtas. Varie o começo da frase (evite repetir "Entendi", "Perfeito", "Certo"); seja natural como no WhatsApp. Retorne apenas a mensagem final, sem prefixos.`;
 
   const userContent = thread.map((m) => `${m.role === 'assistant' ? 'Atendente' : 'Cliente'}: ${m.content}`).join('\n');
   const response = await fetch(CHAT_COMPLETIONS_URL, {
@@ -93,7 +192,7 @@ Retorne apenas a mensagem final.`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ],
-      max_tokens: 120,
+      max_tokens: 150,
       temperature: 0.7,
     }),
   });
@@ -118,6 +217,9 @@ function createFirstContactAgent(options = {}) {
     const messageId = msg.id?._serialized || msg.id?.id || '';
     const contactId = msg.from;
     const contact = memory.getContact(contactId);
+    if (contact.handedOff) {
+      return { action: 'ignore', reason: 'ja_encaminhado_ao_corretor' };
+    }
     if (messageId && contact.lastIncomingMessageId === messageId) {
       return { action: 'ignore', reason: 'evento-duplicado' };
     }
@@ -127,11 +229,52 @@ function createFirstContactAgent(options = {}) {
     memory.appendMessage(contactId, { role: 'user', content, messageId });
     memory.updateContact(contactId, { lastIncomingMessageId: messageId });
 
+    extractQualificationFromText(content, memory.getContact(contactId), memory.updateQualification, contactId);
+    const contactAfterExtract = memory.getContact(contactId);
+    if (memory.isQualificationComplete(contactId)) {
+      const replyText = QUALIFICATION_CLOSING_MESSAGE;
+      const delay = randomDelayMs(replyDelay.minMs, replyDelay.maxMs);
+      await sleep(delay);
+      const sentMsg = await client.sendMessage(contactId, replyText);
+      const sentId = sentMsg?.id?._serialized || sentMsg?.id?.id || '';
+      memory.appendMessage(contactId, { role: 'assistant', content: replyText, messageId: sentId });
+      memory.updateContact(contactId, {
+        state: STATES.ESCALATE_HUMAN,
+        lastOutgoingMessageId: sentId,
+        handedOff: true,
+        lastAction: 'escalate',
+      });
+      memory.updateSummary(contactId);
+      memory.persist();
+      appendDecision({
+        contactId,
+        action: 'escalate',
+        reason: 'qualificacao_completa',
+        state: STATES.ESCALATE_HUMAN,
+        intent: 'qualificacao',
+        confidence: 1,
+        pendingFields: [],
+        replyText,
+        messageId,
+        qualification: contactAfterExtract.qualification,
+      }, options.decisionsLogPath);
+      return {
+        action: 'escalate',
+        reason: 'qualificacao_completa',
+        contactId,
+        intent: 'qualificacao',
+        confidence: 1,
+        state: STATES.ESCALATE_HUMAN,
+        replyText,
+      };
+    }
+
     const detection = detectIntentByRules(content);
     const nextState = getNextState(contact.state, detection.intent);
     const pendingFields = detectPendingFields(detection.intent, content);
     const sensitiveIntent = detection.intent === INTENTS.COMPLAINT;
     const lowConfidence = detection.confidence < confidenceThreshold;
+    const qualProgress = memory.getQualificationProgress(contactId);
 
     let action = 'reply';
     let reason = 'auto-reply';
@@ -142,19 +285,49 @@ function createFirstContactAgent(options = {}) {
     } else if (contact.doNotContact) {
       action = 'ignore';
       reason = 'contato-em-do-not-contact';
-    } else if (sensitiveIntent && requireHumanForSensitive) {
+    } else if (sensitiveIntent && requireHumanForSensitive && memory.isQualificationComplete(contactId)) {
       action = 'escalate';
       reason = 'intent-sensivel';
-    } else if (lowConfidence) {
+    } else if (lowConfidence && memory.isQualificationComplete(contactId)) {
       action = 'escalate';
       reason = 'baixa-confianca';
     }
 
+    if (action === 'escalate' && !memory.isQualificationComplete(contactId)) {
+      action = 'reply';
+      reason = 'qualificacao-incompleta-nao-escalar';
+    }
+
     let replyText = '';
     if (action === 'reply') {
-      const thread = contact.recentMessages.slice(-12).map((m) => ({ role: m.role, content: m.content }));
-      const aiReply = await generateReplyWithAI({ thread, intent: detection.intent, summary: contact.summary });
-      replyText = aiReply || buildFallbackReply(detection.intent, contact);
+      const c = memory.getContact(contactId);
+      const qualProgress = memory.getQualificationProgress(contactId);
+      const conditionProgress = memory.getConditionProgress(contactId);
+      const q = c.qualification || {};
+      const allCollected = [...qualProgress.collected, ...conditionProgress.collected]
+        .map((f) => `${f}=${q[f] || ''}`)
+        .join(', ');
+      const searchComplete = qualProgress.collected.length >= memory.MIN_QUALIFICATION_FIELDS;
+      const missingTopics = searchComplete
+        ? conditionProgress.missing.map((f) => MISSING_TOPIC_LABELS[f] || f)
+        : qualProgress.missing.map((f) => MISSING_TOPIC_LABELS[f] || f);
+      const phaseHint = searchComplete
+        ? ' Fase atual: já sabemos o que ele busca; induza a simulação e colete condições (renda, entrada, FGTS, carteira 3+ anos).'
+        : '';
+      let thread = c.recentMessages.slice(-12).map((m) => ({ role: m.role, content: m.content }));
+      const hasAssistantInThread = thread.some((m) => m.role === 'assistant');
+      if (!hasAssistantInThread) {
+        thread = [{ role: 'assistant', content: PRESENTATION_ALREADY_SENT }, ...thread];
+      }
+      const aiReply = await generateReplyWithAI({
+        thread,
+        intent: detection.intent,
+        summary: c.summary,
+        qualificationCollected: allCollected || 'nada ainda',
+        missingTopics,
+        phaseHint,
+      });
+      replyText = aiReply || buildFallbackReply(detection.intent, c);
       const delay = randomDelayMs(replyDelay.minMs, replyDelay.maxMs);
       await sleep(delay);
       const sentMsg = await client.sendMessage(contactId, replyText);
@@ -164,13 +337,13 @@ function createFirstContactAgent(options = {}) {
     }
 
     if (action === 'escalate') {
-      replyText = 'Entendi seu ponto. Vou encaminhar seu atendimento para um especialista humano continuar com você, tudo bem?';
+      replyText = QUALIFICATION_CLOSING_MESSAGE;
       const delay = randomDelayMs(replyDelay.minMs, replyDelay.maxMs);
       await sleep(delay);
       const sentMsg = await client.sendMessage(contactId, replyText);
       const sentId = sentMsg?.id?._serialized || sentMsg?.id?.id || '';
       memory.appendMessage(contactId, { role: 'assistant', content: replyText, messageId: sentId });
-      memory.updateContact(contactId, { lastOutgoingMessageId: sentId });
+      memory.updateContact(contactId, { lastOutgoingMessageId: sentId, handedOff: true });
     }
 
     memory.updateContact(contactId, {

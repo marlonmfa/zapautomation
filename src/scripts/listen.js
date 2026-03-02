@@ -10,7 +10,8 @@ const { suggestReply } = require('../services/reply-suggestion');
 const { createFirstContactAgent } = require('../services/first-contact-agent');
 const { isFirstContactAgentEnabled } = require('../config');
 
-const client = createClient({ headless: true });
+const headless = process.env.LISTEN_HEADLESS !== 'false' && process.env.LISTEN_HEADLESS !== '0';
+const client = createClient({ headless });
 const enableSuggestion = process.env.ENABLE_REPLY_SUGGESTION === 'true' || process.env.ENABLE_REPLY_SUGGESTION === '1';
 const enableFirstContactAgent = isFirstContactAgentEnabled();
 const firstContactAgent = enableFirstContactAgent ? createFirstContactAgent() : null;

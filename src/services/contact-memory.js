@@ -35,9 +35,30 @@ function saveStore(store, memoryPath = getFirstContactMemoryPath()) {
 function createMemoryService(memoryPath = getFirstContactMemoryPath()) {
   const store = loadStore(memoryPath);
 
+  const QUALIFICATION_FIELDS = ['objetivo', 'tipoImovel', 'bairroRegiao', 'faixaValor', 'prazo'];
+  const CONDITION_FIELDS = ['renda', 'valorEntrada', 'usaFGTS', 'carteiraAssinada'];
+  const ALL_QUALIFICATION_FIELDS = [...QUALIFICATION_FIELDS, ...CONDITION_FIELDS];
+  const MIN_QUALIFICATION_FIELDS = 4;
+  const MIN_CONDITION_FIELDS = 2;
+
+  const defaultQualification = () => ({
+    objetivo: '', tipoImovel: '', bairroRegiao: '', faixaValor: '', prazo: '',
+    renda: '', valorEntrada: '', usaFGTS: '', carteiraAssinada: '',
+  });
+
   function getContact(contactId) {
     const existing = store.contacts[contactId];
-    if (existing) return existing;
+    if (existing) {
+      if (!existing.qualification) existing.qualification = defaultQualification();
+      else {
+        CONDITION_FIELDS.forEach((f) => {
+          if (existing.qualification[f] === undefined) existing.qualification[f] = '';
+        });
+      }
+      if (existing.handedOff === undefined) existing.handedOff = false;
+      if (existing.scriptOpenIndex === undefined) existing.scriptOpenIndex = 0;
+      return existing;
+    }
     const base = {
       contactId,
       state: 'novo_contato',
@@ -47,6 +68,9 @@ function createMemoryService(memoryPath = getFirstContactMemoryPath()) {
       lastOutgoingMessageId: '',
       lastAction: '',
       doNotContact: false,
+      handedOff: false,
+      scriptOpenIndex: 0,
+      qualification: defaultQualification(),
       summary: '',
       pendingFields: [],
       recentMessages: [],
@@ -55,6 +79,37 @@ function createMemoryService(memoryPath = getFirstContactMemoryPath()) {
     };
     store.contacts[contactId] = base;
     return base;
+  }
+
+  function updateQualification(contactId, field, value) {
+    const contact = getContact(contactId);
+    if (ALL_QUALIFICATION_FIELDS.includes(field) && value != null && String(value).trim()) {
+      contact.qualification = contact.qualification || defaultQualification();
+      contact.qualification[field] = String(value).trim().slice(0, 200);
+      contact.updatedAt = nowIso();
+    }
+  }
+
+  function getQualificationProgress(contactId) {
+    const contact = getContact(contactId);
+    const q = contact.qualification || {};
+    const collected = QUALIFICATION_FIELDS.filter((f) => q[f] && String(q[f]).trim());
+    const missing = QUALIFICATION_FIELDS.filter((f) => !q[f] || !String(q[f]).trim());
+    return { collected, missing };
+  }
+
+  function getConditionProgress(contactId) {
+    const contact = getContact(contactId);
+    const q = contact.qualification || {};
+    const collected = CONDITION_FIELDS.filter((f) => q[f] && String(q[f]).trim());
+    const missing = CONDITION_FIELDS.filter((f) => !q[f] || !String(q[f]).trim());
+    return { collected, missing };
+  }
+
+  function isQualificationComplete(contactId) {
+    const search = getQualificationProgress(contactId);
+    const cond = getConditionProgress(contactId);
+    return search.collected.length >= MIN_QUALIFICATION_FIELDS && cond.collected.length >= MIN_CONDITION_FIELDS;
   }
 
   function appendMessage(contactId, entry) {
@@ -105,6 +160,14 @@ function createMemoryService(memoryPath = getFirstContactMemoryPath()) {
     appendMessage,
     updateContact,
     updateSummary,
+    updateQualification,
+    getQualificationProgress,
+    getConditionProgress,
+    isQualificationComplete,
+    QUALIFICATION_FIELDS,
+    CONDITION_FIELDS,
+    MIN_QUALIFICATION_FIELDS,
+    MIN_CONDITION_FIELDS,
     persist,
   };
 }

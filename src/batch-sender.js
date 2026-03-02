@@ -96,6 +96,14 @@ function normalizeContactWithFix(contact) {
   const trimmed = String(contact).trim().replace(/\D/g, '');
   if (!trimmed) return { normalized: contact, wasFixed: false };
   if (trimmed.includes('@')) return { normalized: contact, wasFixed: false };
+  // #region agent log
+  const isBrazilian = trimmed.startsWith('55') || (trimmed.length <= 11 && trimmed.length >= 10 && !/^1\d{10}$/.test(trimmed));
+  if (!isBrazilian) {
+    const normalized = `${trimmed}@c.us`;
+    fetch('http://127.0.0.1:7780/ingest/2d06ff85-62dc-47c7-a26c-754c464f4f22',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c1dbc'},body:JSON.stringify({sessionId:'1c1dbc',location:'batch-sender.js:normalizeContactWithFix',message:'Non-BR contact: skip Brazilian 9-insert',data:{input:contact,trimmed,normalized},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+    return { normalized, wasFixed: false };
+  }
+  // #endregion
   const hadWrongLength = trimmed.length < 13 && trimmed.length >= 4;
   const digits = ensureBrazilian13Digits(trimmed);
   const normalized = `${digits}@c.us`;

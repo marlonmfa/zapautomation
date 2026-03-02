@@ -105,9 +105,16 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, opti
 
   let digits = String(phoneDigits).replace(/\D/g, '');
   if (!digits.length) return { success: false, error: 'Invalid phone digits' };
+  // #region agent log
+  const isBrazilian = digits.startsWith('55') || (digits.length <= 11 && digits.length >= 10 && !/^1\d{10}$/.test(digits));
+  if (!isBrazilian) {
+    fetch('http://127.0.0.1:7780/ingest/2d06ff85-62dc-47c7-a26c-754c464f4f22',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c1dbc'},body:JSON.stringify({sessionId:'1c1dbc',location:'send-via-browser.js:openChatAndSendMessageOnPage',message:'Non-BR digits: no 55 prepend',data:{phoneDigits,digitsUsed:digits},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+  } else {
+  // #endregion
   if (!digits.startsWith('55')) digits = '55' + digits;
   while (digits.length < 13 && digits.length >= 4) {
     digits = digits.slice(0, 4) + '9' + digits.slice(4);
+  }
   }
   
   const url = `${WHATSAPP_WEB_SEND_URL}/?phone=${digits}`;

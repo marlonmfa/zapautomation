@@ -70,7 +70,7 @@ npm run listen
 ```
 
 When enabled, the listener:
-- keeps per-contact memory in `data/first-contact-memory.json`
+- keeps per-contact memory in `data/first-contact-memory.json` (para testar de novo com o mesmo número, apague o contato nesse arquivo ou o arquivo inteiro)
 - auto-replies only when confidence/safety checks pass
 - escalates ambiguous/sensitive cases
 - writes structured decisions to `data/first-contact-decisions.jsonl`

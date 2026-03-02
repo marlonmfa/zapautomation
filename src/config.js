@@ -8,7 +8,8 @@ const BATCH_DELAY_MIN_MS = parseInt(process.env.BATCH_DELAY_MIN_MS || '3000', 10
 const BATCH_DELAY_MAX_MS = parseInt(process.env.BATCH_DELAY_MAX_MS || '7000', 10);
 const BATCH_SEND_TIMEOUT_MS = parseInt(process.env.BATCH_SEND_TIMEOUT_MS || '15000', 10);
 /** When 'false', send to all contacts (do not skip those who already received a message). Default: 'true' */
-const BATCH_SKIP_IF_EVER_SENT = process.env.BATCH_SKIP_IF_EVER_SENT !== 'false';
+/** Quando true, pula contatos que já receberam qualquer mensagem nossa. Quando false (padrão), envia sempre (mensagem inicial mesmo se já tiver conversa). */
+const BATCH_SKIP_IF_EVER_SENT = process.env.BATCH_SKIP_IF_EVER_SENT === 'true';
 const BATCH_REQUIRE_OPT_IN = process.env.BATCH_REQUIRE_OPT_IN === 'true';
 const BATCH_SUPPRESSION_FILE = (process.env.BATCH_SUPPRESSION_FILE || '').trim();
 const BATCH_MAX_PER_RUN = parseInt(process.env.BATCH_MAX_PER_RUN || '0', 10);
@@ -20,8 +21,8 @@ const BATCH_STOP_MIN_ATTEMPTS = parseInt(process.env.BATCH_STOP_MIN_ATTEMPTS || 
 const BATCH_BLOCKLIKE_STOP_COUNT = parseInt(process.env.BATCH_BLOCKLIKE_STOP_COUNT || '5', 10);
 const ENABLE_FIRST_CONTACT_AGENT = process.env.ENABLE_FIRST_CONTACT_AGENT === 'true' || process.env.ENABLE_FIRST_CONTACT_AGENT === '1';
 const FIRST_CONTACT_CONFIDENCE_THRESHOLD = parseFloat(process.env.FIRST_CONTACT_CONFIDENCE_THRESHOLD || '0.72');
-const FIRST_CONTACT_REPLY_DELAY_MIN_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MIN_MS || '1500', 10);
-const FIRST_CONTACT_REPLY_DELAY_MAX_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MAX_MS || '5000', 10);
+const FIRST_CONTACT_REPLY_DELAY_MIN_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MIN_MS || '500', 10);
+const FIRST_CONTACT_REPLY_DELAY_MAX_MS = parseInt(process.env.FIRST_CONTACT_REPLY_DELAY_MAX_MS || '2000', 10);
 const FIRST_CONTACT_MEMORY_PATH = process.env.FIRST_CONTACT_MEMORY_PATH || 'data/first-contact-memory.json';
 const FIRST_CONTACT_DECISIONS_LOG_PATH = process.env.FIRST_CONTACT_DECISIONS_LOG_PATH || 'data/first-contact-decisions.jsonl';
 const FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE = process.env.FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE !== 'false';
@@ -99,8 +100,8 @@ function getFirstContactConfidenceThreshold() {
 
 function getFirstContactReplyDelayRange() {
   return {
-    minMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MIN_MS) ? FIRST_CONTACT_REPLY_DELAY_MIN_MS : 1500,
-    maxMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MAX_MS) ? FIRST_CONTACT_REPLY_DELAY_MAX_MS : 5000,
+    minMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MIN_MS) ? FIRST_CONTACT_REPLY_DELAY_MIN_MS : 500,
+    maxMs: Number.isFinite(FIRST_CONTACT_REPLY_DELAY_MAX_MS) ? FIRST_CONTACT_REPLY_DELAY_MAX_MS : 2000,
   };
 }
 
