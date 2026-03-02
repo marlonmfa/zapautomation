@@ -39,6 +39,7 @@
     "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.5",
     "openai": "^6.25.0",
+    "pdf-parse": "^2.4.5",
     "puppeteer": "^23.0.0",
     "qrcode": "^1.5.4",
     "whatsapp-web.js": "^1.26.0"

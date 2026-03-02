@@ -29,6 +29,8 @@ const FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE = process.env.FIRST_CONTACT_REQU
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
+/** Path to a PDF file whose text is used as extra knowledge for the first-contact AI (optional). */
+const AI_KNOWLEDGE_PDF = (process.env.AI_KNOWLEDGE_PDF || process.env.FIRST_CONTACT_KNOWLEDGE_PDF || '').trim();
 
 const SYSTEM_CHROME_PATHS = {
   darwin: [
@@ -153,6 +155,14 @@ function getElevenLabsApiKey() {
   return key;
 }
 
+/**
+ * Returns the path to the PDF file used as knowledge base for the first-contact AI. Empty if not set.
+ * @returns {string}
+ */
+function getAiKnowledgePdfPath() {
+  return AI_KNOWLEDGE_PDF || '';
+}
+
 module.exports = {
   getAuthDataPath,
   getSessionClientId,
@@ -173,6 +183,7 @@ module.exports = {
   getPuppeteerExecutablePath,
   getOpenAiApiKey,
   getElevenLabsApiKey,
+  getAiKnowledgePdfPath,
   SESSION_ID,
   AUTH_DATA_PATH,
   BATCH_DELAY_MIN_MS,
@@ -194,4 +205,5 @@ module.exports = {
   FIRST_CONTACT_MEMORY_PATH,
   FIRST_CONTACT_DECISIONS_LOG_PATH,
   FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE,
+  AI_KNOWLEDGE_PDF,
 };

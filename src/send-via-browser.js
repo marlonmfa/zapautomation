@@ -24,7 +24,7 @@ const MESSAGE_INPUT_SELECTORS = [
 const DEFAULT_WAIT_AFTER_NAV_MS = 3500;
 const DEFAULT_WAIT_INPUT_READY_MS = 300;
 const DEFAULT_WAIT_AFTER_PASTE_MS = 600;
-const DEFAULT_WAIT_AFTER_SEND_MS = 500;
+const DEFAULT_WAIT_AFTER_SEND_MS = 2500;
 const DEFAULT_NAV_TIMEOUT_MS = 15000;
 
 /**
@@ -181,6 +181,15 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, opti
         await new Promise((r) => setTimeout(r, waitAfterPasteMs));
         await page.keyboard.press('Enter');
         await new Promise((r) => setTimeout(r, waitAfterSendMs));
+        const verifiedRetry = await page.evaluate((expected) => {
+          const out = document.querySelectorAll('#main div.message-out, [data-testid="msg-container"] div.message-out');
+          const last = out[out.length - 1];
+          if (!last) return false;
+          const text = (last.textContent || '').trim().replace(/\s+/g, ' ');
+          const sub = (expected || '').trim().slice(0, 80);
+          return sub.length > 0 && text.includes(sub);
+        }, finalMessage.slice(0, 80));
+        if (!verifiedRetry) return { success: false, error: 'Mensagem não apareceu no chat após enviar' };
         return { success: true };
       }
     } catch (e) {
@@ -232,6 +241,15 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, opti
     await new Promise((r) => setTimeout(r, waitAfterPasteMs));
     await page.keyboard.press('Enter');
     await new Promise((r) => setTimeout(r, waitAfterSendMs));
+    const verified = await page.evaluate((expected) => {
+      const out = document.querySelectorAll('#main div.message-out, [data-testid="msg-container"] div.message-out');
+      const last = out[out.length - 1];
+      if (!last) return false;
+      const text = (last.textContent || '').trim().replace(/\s+/g, ' ');
+      const sub = (expected || '').trim().slice(0, 80);
+      return sub.length > 0 && text.includes(sub);
+    }, finalMessage.slice(0, 80));
+    if (!verified) return { success: false, error: 'Mensagem não apareceu no chat após enviar (confira no navegador)' };
     return { success: true };
   } catch (err) {
     return { success: false, error: err && (err.message || String(err)) };

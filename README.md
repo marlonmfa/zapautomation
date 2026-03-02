@@ -58,6 +58,7 @@ You can enable an automatic first-contact attendant for private chats (question 
 1. Set in `.env`:
    - `ENABLE_FIRST_CONTACT_AGENT=true`
    - `OPENAI_API_KEY=...` (obrigatório para respostas com IA)
+   - (opcional) `AI_KNOWLEDGE_PDF=knowledge/apresentacao-imovel.pdf` — PDF de apresentação do imóvel para a IA usar como base nas respostas (veja pasta `knowledge/`).
 2. Com isso ativo, o agente assume o **primeiro atendimento imobiliário em Joinville**, seguindo estas regras:
    - se apresenta como corretor, em tom simples e educado;
    - confirma tipo de imóvel, faixa de valor e bairros/regiões da cidade;

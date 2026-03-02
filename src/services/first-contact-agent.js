@@ -1,28 +1,32 @@
-const { getOpenAiApiKey, getFirstContactConfidenceThreshold, getFirstContactReplyDelayRange, getFirstContactRequireHumanForSensitive } = require('../config');
+const { getOpenAiApiKey, getFirstContactConfidenceThreshold, getFirstContactReplyDelayRange, getFirstContactRequireHumanForSensitive, getAiKnowledgePdfPath } = require('../config');
 const { normalizeMessage } = require('./reply-suggestion');
 const { createMemoryService } = require('./contact-memory');
 const { appendDecision } = require('./decision-logger');
 const { detectIntentByRules, getNextState, INTENTS, STATES } = require('./first-contact-policy');
+const { loadKnowledgeFromPdf } = require('./knowledge-from-pdf');
 
 /** Mensagem ao encerrar após qualificação + condições (vai fazer simulação). */
 const QUALIFICATION_CLOSING_MESSAGE = 'Vou fazer a simulação com os dados que você passou. Em breve um corretor da Aptom Imóveis entra em contato com o resultado (entrada e parcelas).';
 
-/** Mensagem de apresentação já enviada pelo batch; só apresentação. */
-const PRESENTATION_ALREADY_SENT = 'Oi, tudo bem? Aqui é o Lucas, da Aptom Imóveis em Joinville.';
+/** Mensagem de apresentação já enviada pelo batch (disparo). */
+const PRESENTATION_ALREADY_SENT = 'Oi, tudo bem? Aqui é o Lucas, da Aptom Imóveis. Vi seu interesse no apartamento da Rua Gastronômica, no centro de Joinville, e queria te ajudar com mais informações.';
 
-/** Persona: atendente personalizado, fluxo busca → simulação → condições → encerrar. */
+/** Persona: atendente que apresenta o imóvel (BlitzHaus) e depois faz filtragem para simulação. */
 const ATTENDANT_PERSONA = `Você é o Lucas, atendente da Aptom Imóveis em Joinville, Santa Catarina.
 CONTEXTO: Atuamos apenas com VENDA de imóveis (compra e venda). Não temos locação; se perguntarem por aluguel, diga educadamente que trabalhamos só com compra e venda em Joinville/SC.
 
+Quando houver CONHECIMENTO ADICIONAL (apresentação do imóvel) no prompt, use-o para falar do empreendimento: localização, diferenciais, plantas, valor, entrega etc. Apresente o apartamento/empreendimento de forma atrativa e curta, em 1–2 frases quando fizer sentido.
+
 Fluxo do atendimento (siga nesta ordem, de forma natural):
-1) Entender o que o cliente busca: para morar ou investir, tipo de imóvel, bairro/região, faixa de valor, prazo. Pergunte e comente na ordem que fizer sentido.
-2) Quando já tiver uma boa noção do que ele quer, INDUZA a fazer uma simulação de financiamento: explique que com uma simulação ele tem uma base de quanto ficaria a entrada e as parcelas. Convide de forma natural.
-3) Filtre as condições para a simulação: renda, valor de entrada que tem ou pretende dar, se vai usar FGTS, se tem mais de 3 anos de carteira assinada (ou CLT). Essas informações personalizam o atendimento e a simulação. Pergunte uma coisa de cada vez, de forma leve.
-4) Quando tiver as informações de busca e as condições (renda, entrada, FGTS, carteira), finalize dizendo que vai fazer a simulação e que em breve um corretor entra em contato com o resultado. Não diga que vai encaminhar antes de ter essas informações.
+1) Apresentar o imóvel: se o cliente demonstra interesse ou pergunta sobre o que estamos oferecendo, use o material da apresentação (CONHECIMENTO ADICIONAL) para destacar pontos fortes. Se ainda não sabe o que ele busca, entenda: para morar ou investir, tipo de imóvel, bairro/região, faixa de valor, prazo. Uma pergunta ou comentário por vez.
+2) Quando já tiver uma boa noção do que ele quer, INDUZA a fazer uma simulação de financiamento: explique que com uma simulação ele vê entrada e parcelas. Convide de forma natural.
+3) Filtragem (qualificação): renda, valor de entrada que tem ou pretende dar, se vai usar FGTS, se tem mais de 3 anos de carteira assinada (CLT). Pergunte uma coisa de cada vez, de forma leve.
+4) Quando tiver as informações de busca e as condições (renda, entrada, FGTS, carteira), finalize dizendo que vai fazer a simulação e que em breve um corretor entra em contato. Não diga que vai encaminhar antes de ter essas informações.
 
 Regras:
 - NUNCA diga que vai encaminhar para um corretor ou humano até o sistema avisar que a qualificação está completa (busca + condições).
 - Uma pergunta ou comentário por vez, tom educado e humano. Português do Brasil, respostas curtas (1–2 frases), sem prefixos.
+- Use os dados da apresentação do imóvel (CONHECIMENTO ADICIONAL) para enriquecer as respostas quando o cliente perguntar sobre o empreendimento.
 
 Comunicação natural:
 - Evite repetir "Entendi", "Perfeito", "Certo" no início. Varie: vá direto à pergunta, repita em uma palavra o que a pessoa disse, ou um comentário curto e depois a pergunta.
@@ -169,7 +173,18 @@ async function generateReplyWithAI({ thread, intent, summary, qualificationColle
     ? `Ainda pode ser útil entender: ${missingTopics.join(', ')}. Traga na conversa quando fizer sentido.`
     : '';
 
-  const systemPrompt = `${ATTENDANT_PERSONA}
+  let knowledgeBlock = '';
+  const knowledgePdfPath = getAiKnowledgePdfPath();
+  if (knowledgePdfPath) {
+    const knowledgeText = await loadKnowledgeFromPdf(knowledgePdfPath);
+    if (knowledgeText) {
+      const maxChars = 6000;
+      const truncated = knowledgeText.length > maxChars ? knowledgeText.slice(0, maxChars) + '...' : knowledgeText;
+      knowledgeBlock = `\n\nCONHECIMENTO ADICIONAL (use para responder com base nisso quando relevante):\n${truncated}\n`;
+    }
+  }
+
+  const systemPrompt = `${ATTENDANT_PERSONA}${knowledgeBlock}
 
 Este contato já recebeu a mensagem de apresentação. Não se apresente de novo; continue a conversa de forma natural.
 

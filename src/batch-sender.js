@@ -1,5 +1,15 @@
+const fs = require('fs');
+const path = require('path');
 const { getBatchDelayRange, getBatchSendTimeoutMs } = require('./config');
 const { openChatAndSendMessage: openChatAndSendMessageBrowser } = require('./send-via-browser');
+
+const DEBUG_LOG = path.join(__dirname, '..', 'debug-386a07.log');
+function debugLog(payload) {
+  try {
+    fs.appendFileSync(DEBUG_LOG, JSON.stringify(payload) + '\n');
+  } catch (_) {}
+  fetch('http://127.0.0.1:7780/ingest/2d06ff85-62dc-47c7-a26c-754c464f4f22',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'386a07'},body:JSON.stringify(payload)}).catch(()=>{});
+}
 
 /**
  * Random delay between minMs and maxMs (inclusive).
@@ -145,6 +155,9 @@ function contactDigits(contactId) {
  */
 async function resolveChatId(client, contactId) {
   const digits = contactDigits(contactId);
+  // #region agent log
+  debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:entry',message:'resolveChatId entry',data:{contactId,digits},timestamp:Date.now(),hypothesisId:'H2'});
+  // #endregion
 
   // 1) If we have getChats, find an existing chat for this number; its id may already be LID
   if (typeof client.getChats === 'function') {
@@ -159,9 +172,18 @@ async function resolveChatId(client, contactId) {
       });
       if (match) {
         const id = typeof match.id === 'string' ? match.id : match.id._serialized;
-        if (id) return id;
+        if (id) {
+          // #region agent log
+          debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:exit',message:'resolved via getChats',data:{contactId,resolvedId:id},timestamp:Date.now(),hypothesisId:'H2'});
+          // #endregion
+          return id;
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      // #region agent log
+      debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:getChats-catch',message:'getChats threw',data:{contactId,error:String(e&&e.message)},timestamp:Date.now(),hypothesisId:'H2'});
+      // #endregion
+    }
   }
 
   // 2) getContactLidAndPhone returns { lid, pn }; prefer lid for sendMessage (may throw for some contacts)
@@ -180,11 +202,23 @@ async function resolveChatId(client, contactId) {
   if (typeof client.getNumberId === 'function') {
     try {
       const wid = await client.getNumberId(contactId);
-      if (wid && typeof wid === 'object' && wid._serialized) return wid._serialized;
+      if (wid && typeof wid === 'object' && wid._serialized) {
+        // #region agent log
+        debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:exit',message:'resolved via getNumberId',data:{contactId,resolvedId:wid._serialized},timestamp:Date.now(),hypothesisId:'H2'});
+        // #endregion
+        return wid._serialized;
+      }
       if (typeof wid === 'string') return wid;
-    } catch (_) {}
+    } catch (e) {
+      // #region agent log
+      debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:getNumberId-catch',message:'getNumberId threw',data:{contactId,error:String(e&&e.message)},timestamp:Date.now(),hypothesisId:'H2'});
+      // #endregion
+    }
   }
 
+  // #region agent log
+  debugLog({sessionId:'386a07',location:'batch-sender.js:resolveChatId:exit',message:'fallback to original contactId',data:{contactId},timestamp:Date.now(),hypothesisId:'H2'});
+  // #endregion
   return contactId;
 }
 
@@ -224,7 +258,10 @@ async function getLastMessageFromMeWithDate(client, contactId, limit = 30) {
     const body = typeof last.body === 'string' ? last.body : '';
     const timestamp = typeof last.timestamp === 'number' ? last.timestamp : 0;
     return { body, timestamp };
-  } catch (_) {
+  } catch (e) {
+    // #region agent log
+    debugLog({sessionId:'386a07',location:'batch-sender.js:getLastMessageFromMeWithDate:catch',message:'getChatById or fetchMessages failed',data:{contactId,error:String(e&&e.message)},timestamp:Date.now(),hypothesisId:'H3'});
+    // #endregion
     return null;
   }
 }
@@ -269,10 +306,16 @@ async function sendViaBrowser(client, contactId, message, sendTimeoutMs) {
  */
 async function sendOnce(client, contactId, message, sendTimeoutMs) {
   let chatId = await resolveChatId(client, contactId);
+  // #region agent log
+  debugLog({sessionId:'386a07',location:'batch-sender.js:sendOnce:beforeSend',message:'before sendMessage',data:{contactId,chatId},timestamp:Date.now(),hypothesisId:'H5'});
+  // #endregion
   try {
     await withTimeout(client.sendMessage(chatId, message), sendTimeoutMs);
     return { success: true };
   } catch (err) {
+    // #region agent log
+    debugLog({sessionId:'386a07',location:'batch-sender.js:sendOnce:catch',message:'sendMessage failed',data:{contactId,chatId,error:String(err&&err.message)},timestamp:Date.now(),hypothesisId:'H5'});
+    // #endregion
     if (isNoLidError(err) && contactId.endsWith('@c.us')) {
       const lidId = `${contactDigits(contactId)}@lid`;
       if (lidId !== chatId) {
@@ -306,6 +349,9 @@ async function sendAndVerify(client, contactId, message, opts = {}) {
   const onStep = opts.onStep || (() => {});
 
   let chatId = await resolveChatId(client, contactId);
+  // #region agent log
+  debugLog({sessionId:'386a07',location:'batch-sender.js:sendAndVerify:beforeSend',message:'before sendMessage',data:{contactId,chatId},timestamp:Date.now(),hypothesisId:'H5'});
+  // #endregion
   const doSend = (id) => withTimeout(client.sendMessage(id, message), sendTimeoutMs);
 
   if (checkAlreadySent) {
@@ -329,6 +375,9 @@ async function sendAndVerify(client, contactId, message, opts = {}) {
       onStep({ type: 'send_ok', contactId, attempt });
     } catch (err) {
       lastError = err && (err.message || String(err));
+      // #region agent log
+      debugLog({sessionId:'386a07',location:'batch-sender.js:sendAndVerify:catch',message:'sendMessage failed',data:{contactId,chatId,error:lastError},timestamp:Date.now(),hypothesisId:'H5'});
+      // #endregion
       if (isNoLidError(err) && contactId.endsWith('@c.us')) {
         const lidId = `${contactDigits(contactId)}@lid`;
         if (lidId !== chatId) {
@@ -406,6 +455,7 @@ async function sendAndVerify(client, contactId, message, opts = {}) {
  * @param {boolean} [options.useBrowserSend] - If true, send by navigating to send URL and simulating type+Enter (avoids "número desconhecido").
  * @param {boolean} [options.skipIfEverSent] - If true (default), skip contact when we have ever sent any message in that chat (only send to users who have not received previously).
  * @param {boolean} [options.skipIfSentToday] - When skipIfEverSent is false: if true (default), skip when our last message was sent today.
+ * @param {boolean} [options.checkAlreadySent] - If false, send even when last message in chat already matches (e.g. with --force).
  * @param {function(number, number, string): void} [options.onProgress] - Called as (currentIndex, total, contactId) before each send
  * @param {function(object): void} [options.onStep] - Called with step details for each send/verify (type, contactId, attempt?, error?, reason?, etc.) for verbose logging
  * @returns {Promise<{ sent: number, failed: number, results: Array<{ contact: string, success: boolean, error?: string, retried?: number, alreadySent?: boolean, skippedSameDay?: boolean, skippedAlreadyReceived?: boolean }> }>}
@@ -421,6 +471,7 @@ async function runBatch(client, items, options = {}) {
   const useBrowserSend = options.useBrowserSend === true;
   const skipIfEverSent = options.skipIfEverSent !== false;
   const skipIfSentToday = options.skipIfSentToday !== false;
+  const checkAlreadySent = options.checkAlreadySent !== false;
   const requireOptIn = options.requireOptIn === true;
   const maxPerRun = Number.isFinite(options.maxPerRun) ? options.maxPerRun : 0;
   const cooldownEvery = Number.isFinite(options.cooldownEvery) ? options.cooldownEvery : 0;
@@ -436,6 +487,9 @@ async function runBatch(client, items, options = {}) {
   const total = items.length;
   let attempts = 0;
   let blockLikeErrors = 0;
+  // #region agent log
+  debugLog({sessionId:'386a07',location:'batch-sender.js:runBatch:entry',message:'runBatch started',data:{total,skipIfEverSent,useBrowserSend},timestamp:Date.now(),hypothesisId:'H4'});
+  // #endregion
   let stoppedEarly = false;
   let stopReason = '';
   let processedCount = 0;
@@ -459,6 +513,9 @@ async function runBatch(client, items, options = {}) {
     const optedOut = items[i] && (items[i].optOut === true || items[i].unsubscribed === true);
     const suppressed = items[i] && items[i].suppressed === true;
     const contactId = normalizeContactId(contact);
+    // #region agent log
+    debugLog({sessionId:'386a07',location:'batch-sender.js:runBatch:contact',message:'raw and normalized contact',data:{rawContact:contact,contactId,index:i},timestamp:Date.now(),hypothesisId:'H4'});
+    // #endregion
 
     if (optedOut) {
       skipped.optOut++;
@@ -487,7 +544,14 @@ async function runBatch(client, items, options = {}) {
 
     let resolvedId;
     if (skipIfEverSent || skipIfSentToday) {
-      resolvedId = await resolveChatId(client, contactId);
+      try {
+        resolvedId = await resolveChatId(client, contactId);
+      } catch (e) {
+        // #region agent log
+        debugLog({sessionId:'386a07',location:'batch-sender.js:runBatch:resolveChatId-throw',message:'resolveChatId threw (skipIfEverSent path)',data:{contactId,error:String(e&&e.message)},timestamp:Date.now(),hypothesisId:'H2'});
+        // #endregion
+        throw e;
+      }
     }
 
     if (skipIfEverSent) {
@@ -534,6 +598,7 @@ async function runBatch(client, items, options = {}) {
         sendTimeoutMs,
         verifyDelayMs: options.verifyDelayMs,
         maxVerifyRetries: options.maxVerifyRetries,
+        checkAlreadySent,
         onStep,
       });
     }

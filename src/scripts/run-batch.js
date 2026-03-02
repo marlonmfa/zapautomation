@@ -12,6 +12,7 @@ const QRCode = require('qrcode');
 const { createClient } = require('../client');
 const { createQRServer } = require('../qr-server');
 const { runBatch } = require('../batch-sender');
+const { loadBatchItems } = require('../batch-loader');
 const {
   getBatchDelayRange,
   getBatchSendTimeoutMs,
@@ -22,10 +23,18 @@ const {
   getBatchMaxPerRun,
   getBatchCooldown,
   getBatchHealthStopRules,
+  getAuthDataPath,
 } = require('../config');
 
 /** Fixed port for QR page so the URL is predictable if the browser does not open automatically. */
-const QR_SERVER_PORT = 37830;
+const QR_SERVER_PORT = 37831;
+
+const DEBUG_LOG_PATH = path.join(__dirname, '..', '..', 'debug-386a07.log');
+function debugLogRunBatch(payload) {
+  try {
+    fs.appendFileSync(DEBUG_LOG_PATH, JSON.stringify({ ...payload, sessionId: '386a07', timestamp: Date.now() }) + '\n');
+  } catch (_) {}
+}
 
 const args = process.argv.slice(2);
 const batchPath = args.find((a) => !a.startsWith('--'));
@@ -59,6 +68,7 @@ if (!Array.isArray(items) || items.length === 0) {
   console.error('Batch file must be a non-empty array of { contact, message }.');
   process.exit(1);
 }
+debugLogRunBatch({ location: 'run-batch.js:start', message: 'batch file loaded', data: { itemCount: items.length, firstContact: items[0] && items[0].contact } });
 
 function normalizeContactDigits(contact) {
   return String(contact || '').replace(/@.*$/, '').replace(/\D/g, '');
@@ -104,13 +114,20 @@ function writeCampaignReport(report) {
   }
 }
 
-const suppressionSet = loadSuppressionSet();
-items = items.map((item) => {
-  const digits = normalizeContactDigits(item && item.contact);
-  return {
-    ...item,
-    suppressed: digits ? suppressionSet.has(digits) : false,
-  };
+let batchLoaded = loadBatchItems(absolutePath);
+items = batchLoaded.items;
+
+// Remove Chrome lock files so we can start even if a previous process didn't close cleanly.
+const projectRoot = path.join(__dirname, '..', '..');
+const sessionDir = path.join(projectRoot, getAuthDataPath(), 'session-' + getSessionClientId());
+['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile'].forEach((name) => {
+  try {
+    const fp = path.join(sessionDir, name);
+    if (fs.existsSync(fp)) {
+      fs.unlinkSync(fp);
+      console.log('Removido lock da sessão:', name);
+    }
+  } catch (_) {}
 });
 
 // Single client = single browser session for the entire batch (all messages use this client).
@@ -233,12 +250,14 @@ client.on('ready', async () => {
   }
 
   try {
+    debugLogRunBatch({ location: 'run-batch.js:beforeRunBatch', message: 'client ready, calling runBatch', data: { itemCount: items.length } });
     console.log('Enviando para cada contato (passo a passo abaixo):');
     const result = await runBatch(client, items, {
       sendTimeoutMs: getBatchSendTimeoutMs(),
       useBrowserSend,
       skipIfEverSent,
       skipIfSentToday,
+      checkAlreadySent: !forceListOnly,
       requireOptIn,
       maxPerRun: runLimit,
       cooldownEvery: cooldown.every,
