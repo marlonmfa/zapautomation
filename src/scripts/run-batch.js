@@ -12,7 +12,7 @@ const QRCode = require('qrcode');
 const { createClient } = require('../client');
 const { createQRServer } = require('../qr-server');
 const { runBatch } = require('../batch-sender');
-const { loadBatchItems } = require('../batch-loader');
+const { loadBatchItems, addToSentList } = require('../batch-loader');
 const {
   getBatchDelayRange,
   getBatchSendTimeoutMs,
@@ -188,6 +188,7 @@ client.on('ready', async () => {
         return;
       case 'send_ok':
         console.log(`${prefix}  → Enviado com sucesso.`);
+        if (contactId) addToSentList(contactId);
         return;
       case 'send_fail':
         console.log(`${prefix}  → Falha no envio: ${error}`);
@@ -197,6 +198,7 @@ client.on('ready', async () => {
         return;
       case 'verify_match':
         console.log(`${prefix}  → Verificado: última mensagem confere. OK.`);
+        if (contactId) addToSentList(contactId);
         return;
       case 'verify_fail':
         console.log(`${prefix}  → Verificação falhou: ${reason}`);

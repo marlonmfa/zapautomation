@@ -5,13 +5,14 @@
  * Set ENABLE_REPLY_SUGGESTION=true and OPENAI_API_KEY in .env to enable suggestions.
  */
 const path = require('path');
+const fs = require('fs');
 const { createClient } = require('../client');
 const { attachListeners } = require('../listeners');
 const { suggestReply } = require('../services/reply-suggestion');
 const { createFirstContactAgent } = require('../services/first-contact-agent');
-const { isFirstContactAgentEnabled } = require('../config');
+const { isFirstContactAgentEnabled, getAuthDataPath, getSessionClientId } = require('../config');
 const { runBatch } = require('../batch-sender');
-const { loadBatchItems } = require('../batch-loader');
+const { loadBatchItems, addToSentList } = require('../batch-loader');
 const {
   getBatchSendTimeoutMs,
   getBatchSkipIfEverSent,
@@ -20,6 +21,17 @@ const {
   getBatchCooldown,
   getBatchHealthStopRules,
 } = require('../config');
+
+if (process.argv.some((a) => a.startsWith('--send-batch=')) || process.env.RUN_BATCH) {
+  const projectRoot = path.join(__dirname, '..', '..');
+  const sessionDir = path.join(projectRoot, getAuthDataPath(), 'session-' + getSessionClientId());
+  ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile'].forEach((name) => {
+    try {
+      const fp = path.join(sessionDir, name);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    } catch (_) {}
+  });
+}
 
 const headless = process.env.LISTEN_HEADLESS !== 'false' && process.env.LISTEN_HEADLESS !== '0';
 const client = createClient({ headless });
@@ -81,8 +93,10 @@ client.on('auth_failure', (msg) => {
   process.exit(1);
 });
 
+let batchAlreadyRun = false;
 client.on('ready', async () => {
-  if (batchPathToRun) {
+  if (batchPathToRun && !batchAlreadyRun) {
+    batchAlreadyRun = true;
     try {
       const { items } = loadBatchItems(batchPathToRun);
       const useBrowserSend = process.env.BATCH_USE_BROWSER_SEND !== 'false';
@@ -95,7 +109,10 @@ client.on('ready', async () => {
       function onStep(step) {
         const { type, contactId, reason, error } = step;
         if (type === 'contact_start') console.log('[batch]', step.current + '/' + step.total, contactId);
-        if (type === 'send_ok' || type === 'verify_match') console.log('[batch] OK', contactId);
+        if (type === 'send_ok' || type === 'verify_match') {
+          console.log('[batch] OK', contactId);
+          addToSentList(contactId);
+        }
         if (type === 'send_fail' || type === 'verify_fail') console.log('[batch] Falha', contactId, error || reason);
         if (type === 'already_sent') console.log('[batch] Ignorado', contactId, reason);
       }

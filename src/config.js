@@ -31,6 +31,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || '';
 /** Path to a PDF file whose text is used as extra knowledge for the first-contact AI (optional). */
 const AI_KNOWLEDGE_PDF = (process.env.AI_KNOWLEDGE_PDF || process.env.FIRST_CONTACT_KNOWLEDGE_PDF || '').trim();
+/** Path to a text/markdown file with real estate context (Joinville, interest rates, etc.) for the first-contact AI. Default: knowledge/contexto-joinville-juros.md */
+const AI_KNOWLEDGE_CONTEXTO = (process.env.AI_KNOWLEDGE_CONTEXTO || 'knowledge/contexto-joinville-juros.md').trim();
 
 const SYSTEM_CHROME_PATHS = {
   darwin: [
@@ -163,6 +165,14 @@ function getAiKnowledgePdfPath() {
   return AI_KNOWLEDGE_PDF || '';
 }
 
+/**
+ * Returns the path to the context knowledge file (Joinville, interest rates, etc.). Empty if disabled.
+ * @returns {string}
+ */
+function getAiKnowledgeContextoPath() {
+  return AI_KNOWLEDGE_CONTEXTO || '';
+}
+
 module.exports = {
   getAuthDataPath,
   getSessionClientId,
@@ -184,6 +194,7 @@ module.exports = {
   getOpenAiApiKey,
   getElevenLabsApiKey,
   getAiKnowledgePdfPath,
+  getAiKnowledgeContextoPath,
   SESSION_ID,
   AUTH_DATA_PATH,
   BATCH_DELAY_MIN_MS,
@@ -206,4 +217,5 @@ module.exports = {
   FIRST_CONTACT_DECISIONS_LOG_PATH,
   FIRST_CONTACT_REQUIRE_HUMAN_FOR_SENSITIVE,
   AI_KNOWLEDGE_PDF,
+  AI_KNOWLEDGE_CONTEXTO,
 };

@@ -289,9 +289,15 @@ function isTodayUnix(unixSeconds) {
 async function sendViaBrowser(client, contactId, message, sendTimeoutMs) {
   if (!client.pupBrowser) return { success: false, error: 'No browser (pupBrowser) available' };
   const digits = contactDigits(contactId);
-  const result = await openChatAndSendMessageBrowser(client.pupBrowser, digits, message, {
+  const pageOrBrowser = client.pupPage || client.pupBrowser;
+  const result = await openChatAndSendMessageBrowser(pageOrBrowser, digits, message, {
     timeoutMs: sendTimeoutMs || 60000,
   });
+  if (result.success && client.pupPage) {
+    try {
+      await client.pupPage.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded', timeout: 10000 });
+    } catch (_) {}
+  }
   return result;
 }
 

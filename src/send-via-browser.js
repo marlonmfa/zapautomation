@@ -118,7 +118,6 @@ async function openChatAndSendMessageOnPage(page, phoneDigits, messageOrFn, opti
   }
   
   const url = `${WHATSAPP_WEB_SEND_URL}/?phone=${digits}`;
-  
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   } catch (err) {

@@ -38,8 +38,8 @@ function createMemoryService(memoryPath = getFirstContactMemoryPath()) {
   const QUALIFICATION_FIELDS = ['objetivo', 'tipoImovel', 'bairroRegiao', 'faixaValor', 'prazo'];
   const CONDITION_FIELDS = ['renda', 'valorEntrada', 'usaFGTS', 'carteiraAssinada'];
   const ALL_QUALIFICATION_FIELDS = [...QUALIFICATION_FIELDS, ...CONDITION_FIELDS];
-  const MIN_QUALIFICATION_FIELDS = 4;
-  const MIN_CONDITION_FIELDS = 2;
+  const MIN_QUALIFICATION_FIELDS = 5;
+  const MIN_CONDITION_FIELDS = 4;
 
   const defaultQualification = () => ({
     objetivo: '', tipoImovel: '', bairroRegiao: '', faixaValor: '', prazo: '',

@@ -1,4 +1,6 @@
-const { getOpenAiApiKey, getFirstContactConfidenceThreshold, getFirstContactReplyDelayRange, getFirstContactRequireHumanForSensitive, getAiKnowledgePdfPath } = require('../config');
+const fs = require('fs');
+const path = require('path');
+const { getOpenAiApiKey, getFirstContactConfidenceThreshold, getFirstContactReplyDelayRange, getFirstContactRequireHumanForSensitive, getAiKnowledgePdfPath, getAiKnowledgeContextoPath } = require('../config');
 const { normalizeMessage } = require('./reply-suggestion');
 const { createMemoryService } = require('./contact-memory');
 const { appendDecision } = require('./decision-logger');
@@ -18,19 +20,26 @@ CONTEXTO: Atuamos apenas com VENDA de imóveis (compra e venda). Não temos loca
 Quando houver CONHECIMENTO ADICIONAL (apresentação do imóvel) no prompt, use-o para falar do empreendimento: localização, diferenciais, plantas, valor, entrega etc. Apresente o apartamento/empreendimento de forma atrativa e curta, em 1–2 frases quando fizer sentido.
 
 Fluxo do atendimento (siga nesta ordem, de forma natural):
-1) Apresentar o imóvel: se o cliente demonstra interesse ou pergunta sobre o que estamos oferecendo, use o material da apresentação (CONHECIMENTO ADICIONAL) para destacar pontos fortes. Se ainda não sabe o que ele busca, entenda: para morar ou investir, tipo de imóvel, bairro/região, faixa de valor, prazo. Uma pergunta ou comentário por vez.
+1) Apresentar o imóvel: se o cliente demonstra interesse ou pergunta sobre o que estamos oferecendo, use o material da apresentação (CONHECIMENTO ADICIONAL) para destacar pontos fortes. Se ainda não sabe o que ele busca, colete: objetivo (morar ou investir), tipo de imóvel, bairro/região, faixa de valor, prazo. Uma pergunta por vez.
 2) Quando já tiver uma boa noção do que ele quer, INDUZA a fazer uma simulação de financiamento: explique que com uma simulação ele vê entrada e parcelas. Convide de forma natural.
-3) Filtragem (qualificação): renda, valor de entrada que tem ou pretende dar, se vai usar FGTS, se tem mais de 3 anos de carteira assinada (CLT). Pergunte uma coisa de cada vez, de forma leve.
-4) Quando tiver as informações de busca e as condições (renda, entrada, FGTS, carteira), finalize dizendo que vai fazer a simulação e que em breve um corretor entra em contato. Não diga que vai encaminhar antes de ter essas informações.
+3) Filtragem (qualificação): colete renda, valor de entrada que tem ou pretende dar, se vai usar FGTS, se tem mais de 3 anos de carteira assinada (CLT). Pergunte uma coisa de cada vez, de forma leve.
+4) Só quando tiver TODAS as informações (busca + condições acima), finalize dizendo que vai fazer a simulação e que em breve um corretor entra em contato.
 
-Regras:
-- NUNCA diga que vai encaminhar para um corretor ou humano até o sistema avisar que a qualificação está completa (busca + condições).
-- Uma pergunta ou comentário por vez, tom educado e humano. Português do Brasil, respostas curtas (1–2 frases), sem prefixos.
+Regras OBRIGATÓRIAS:
+- ORDEM DAS PERGUNTAS (sempre nesta sequência, nunca pule nem inverta): 1) objetivo (morar ou investir), 2) tipo de imóvel, 3) bairro ou região, 4) faixa de valor, 5) prazo para compra, 6) renda, 7) valor de entrada, 8) uso de FGTS, 9) carteira assinada (3+ anos). Quando o sistema indicar "Próxima pergunta obrigatória: N/9", sua mensagem DEVE ser APENAS uma pergunta sobre esse item N. Não pergunte sobre outro item antes de receber a resposta do atual.
+- NUNCA diga que vai encaminhar, fazer simulação ou que um corretor vai entrar em contato até ter coletado os 9 itens acima, nessa ordem.
+- Uma pergunta por vez, tom educado e humano. Português do Brasil, respostas curtas (1–2 frases), sem prefixos.
 - Use os dados da apresentação do imóvel (CONHECIMENTO ADICIONAL) para enriquecer as respostas quando o cliente perguntar sobre o empreendimento.
 
 Comunicação natural:
 - Evite repetir "Entendi", "Perfeito", "Certo" no início. Varie: vá direto à pergunta, repita em uma palavra o que a pessoa disse, ou um comentário curto e depois a pergunta.
-- Fale como no WhatsApp: direto, pode usar "né", "pra", "tá" quando soar natural.`;
+- Fale como no WhatsApp: direto, pode usar "né", "pra", "tá" quando soar natural.
+
+Quebras de gelo (use quando fizer sentido, antes da pergunta obrigatória):
+- Comentar algo que a pessoa disse: "Que bom que tá pensando nisso!", "Faz sentido.", "Isso ajuda bastante."
+- Transição leve: "Só mais uma coisinha pra te orientar melhor...", "Pra eu já ir encaixando as opções...", "Me conta uma coisa rápida..."
+- Reconhecer: "Ótimo, já anotei. Agora...", "Perfeito, com isso já consigo... Então..."
+- Não precisa usar em toda mensagem; alterne entre pergunta direta e uma quebra de gelo curta para a conversa não parecer formulário.`;
 
 const CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -133,6 +142,24 @@ const MISSING_TOPIC_LABELS = {
   carteiraAssinada: 'se tem mais de 3 anos com carteira assinada (CLT)',
 };
 
+/** Ordem fixa das perguntas. Fallback quando a IA não seguir a ordem. */
+const ORDERED_QUESTIONS = [
+  { key: 'objetivo', text: 'Você busca o imóvel para morar ou para investir?' },
+  { key: 'tipoImovel', text: 'Qual tipo de imóvel te interessa? Apartamento, casa, comercial ou terreno?' },
+  { key: 'bairroRegiao', text: 'Tem preferência de bairro ou região aqui em Joinville?' },
+  { key: 'faixaValor', text: 'Qual faixa de valor você tem em mente?' },
+  { key: 'prazo', text: 'Qual o prazo que você pensa para a compra?' },
+  { key: 'renda', text: 'Me conta sua renda mensal? É para eu já encaixar na simulação.' },
+  { key: 'valorEntrada', text: 'Quanto você tem ou pretende dar de entrada?' },
+  { key: 'usaFGTS', text: 'Você pretende usar o FGTS na entrada ou nas parcelas?' },
+  { key: 'carteiraAssinada', text: 'Você tem mais de 3 anos com carteira assinada (CLT)?' },
+];
+
+function getQuestionForNextField(fieldKey) {
+  const one = ORDERED_QUESTIONS.find((q) => q.key === fieldKey);
+  return one ? one.text : '';
+}
+
 function buildFallbackReply(intent, contact) {
   switch (intent) {
     case INTENTS.GREETING:
@@ -169,18 +196,33 @@ async function generateReplyWithAI({ thread, intent, summary, qualificationColle
   })();
   if (!key) return '';
 
-  const topicsHint = missingTopics && missingTopics.length > 0
-    ? `Ainda pode ser útil entender: ${missingTopics.join(', ')}. Traga na conversa quando fizer sentido.`
+  const nextTopic = missingTopics && missingTopics.length > 0 ? missingTopics[0] : '';
+  const totalSteps = 9;
+  const nextStepIndex = nextTopic ? totalSteps - missingTopics.length + 1 : 0;
+  const topicsHint = nextTopic
+    ? `ORDEM FIXA (não pule, não troque). Próxima pergunta obrigatória: ${nextStepIndex}/${totalSteps} — "${nextTopic}". Sua mensagem DEVE ser uma pergunta DIRETA sobre isso (pode começar com uma quebra de gelo curta tipo "Me conta uma coisa..."). NÃO pergunte sobre outros itens da lista agora; só este.`
     : '';
 
   let knowledgeBlock = '';
+  const contextoPath = getAiKnowledgeContextoPath();
+  if (contextoPath) {
+    const absoluteContexto = path.isAbsolute(contextoPath) ? contextoPath : path.join(process.cwd(), contextoPath);
+    if (fs.existsSync(absoluteContexto)) {
+      try {
+        const contextoText = fs.readFileSync(absoluteContexto, 'utf8');
+        const maxContexto = 4000;
+        const truncatedContexto = contextoText.length > maxContexto ? contextoText.slice(0, maxContexto) + '...' : contextoText;
+        knowledgeBlock += `\n\nCENÁRIO IMOBILIÁRIO E TAXA DE JUROS (use para contextualizar Joinville e impacto dos juros no financiamento):\n${truncatedContexto}\n`;
+      } catch (_) {}
+    }
+  }
   const knowledgePdfPath = getAiKnowledgePdfPath();
   if (knowledgePdfPath) {
     const knowledgeText = await loadKnowledgeFromPdf(knowledgePdfPath);
     if (knowledgeText) {
       const maxChars = 6000;
       const truncated = knowledgeText.length > maxChars ? knowledgeText.slice(0, maxChars) + '...' : knowledgeText;
-      knowledgeBlock = `\n\nCONHECIMENTO ADICIONAL (use para responder com base nisso quando relevante):\n${truncated}\n`;
+      knowledgeBlock += `\n\nCONHECIMENTO ADICIONAL - APRESENTAÇÃO DO IMÓVEL (use para responder com base nisso quando relevante):\n${truncated}\n`;
     }
   }
 
@@ -223,6 +265,10 @@ function createFirstContactAgent(options = {}) {
   const replyDelay = options.replyDelay || getFirstContactReplyDelayRange();
   const requireHumanForSensitive = options.requireHumanForSensitive ?? getFirstContactRequireHumanForSensitive();
 
+  function contactDigits(id) {
+    return String(id || '').replace(/@.*$/, '').replace(/\D/g, '');
+  }
+
   async function handleIncomingMessage(client, msg) {
     if (!msg || msg.fromMe) return { action: 'ignore', reason: 'mensagem-do-proprio-agente' };
 
@@ -231,7 +277,8 @@ function createFirstContactAgent(options = {}) {
 
     const messageId = msg.id?._serialized || msg.id?.id || '';
     const contactId = msg.from;
-    const contact = memory.getContact(contactId);
+    const memoryKey = contactDigits(contactId) + '@c.us';
+    const contact = memory.getContact(memoryKey);
     if (contact.handedOff) {
       return { action: 'ignore', reason: 'ja_encaminhado_ao_corretor' };
     }
@@ -241,25 +288,25 @@ function createFirstContactAgent(options = {}) {
 
     const normalized = await normalizeMessage(msg);
     const content = safeContent(normalized);
-    memory.appendMessage(contactId, { role: 'user', content, messageId });
-    memory.updateContact(contactId, { lastIncomingMessageId: messageId });
+    memory.appendMessage(memoryKey, { role: 'user', content, messageId });
+    memory.updateContact(memoryKey, { lastIncomingMessageId: messageId });
 
-    extractQualificationFromText(content, memory.getContact(contactId), memory.updateQualification, contactId);
-    const contactAfterExtract = memory.getContact(contactId);
-    if (memory.isQualificationComplete(contactId)) {
+    extractQualificationFromText(content, memory.getContact(memoryKey), memory.updateQualification, memoryKey);
+    const contactAfterExtract = memory.getContact(memoryKey);
+    if (memory.isQualificationComplete(memoryKey)) {
       const replyText = QUALIFICATION_CLOSING_MESSAGE;
       const delay = randomDelayMs(replyDelay.minMs, replyDelay.maxMs);
       await sleep(delay);
       const sentMsg = await client.sendMessage(contactId, replyText);
       const sentId = sentMsg?.id?._serialized || sentMsg?.id?.id || '';
-      memory.appendMessage(contactId, { role: 'assistant', content: replyText, messageId: sentId });
-      memory.updateContact(contactId, {
+      memory.appendMessage(memoryKey, { role: 'assistant', content: replyText, messageId: sentId });
+      memory.updateContact(memoryKey, {
         state: STATES.ESCALATE_HUMAN,
         lastOutgoingMessageId: sentId,
         handedOff: true,
         lastAction: 'escalate',
       });
-      memory.updateSummary(contactId);
+      memory.updateSummary(memoryKey);
       memory.persist();
       appendDecision({
         contactId,
@@ -289,46 +336,46 @@ function createFirstContactAgent(options = {}) {
     const pendingFields = detectPendingFields(detection.intent, content);
     const sensitiveIntent = detection.intent === INTENTS.COMPLAINT;
     const lowConfidence = detection.confidence < confidenceThreshold;
-    const qualProgress = memory.getQualificationProgress(contactId);
+    const qualProgress = memory.getQualificationProgress(memoryKey);
 
     let action = 'reply';
     let reason = 'auto-reply';
     if (detection.intent === INTENTS.OPT_OUT) {
       action = 'reply';
-      memory.updateContact(contactId, { doNotContact: true });
+      memory.updateContact(memoryKey, { doNotContact: true });
       reason = 'opt-out-confirmacao';
     } else if (contact.doNotContact) {
       action = 'ignore';
       reason = 'contato-em-do-not-contact';
-    } else if (sensitiveIntent && requireHumanForSensitive && memory.isQualificationComplete(contactId)) {
+    } else if (sensitiveIntent && requireHumanForSensitive && memory.isQualificationComplete(memoryKey)) {
       action = 'escalate';
       reason = 'intent-sensivel';
-    } else if (lowConfidence && memory.isQualificationComplete(contactId)) {
+    } else if (lowConfidence && memory.isQualificationComplete(memoryKey)) {
       action = 'escalate';
       reason = 'baixa-confianca';
     }
 
-    if (action === 'escalate' && !memory.isQualificationComplete(contactId)) {
+    if (action === 'escalate' && !memory.isQualificationComplete(memoryKey)) {
       action = 'reply';
       reason = 'qualificacao-incompleta-nao-escalar';
     }
 
     let replyText = '';
     if (action === 'reply') {
-      const c = memory.getContact(contactId);
-      const qualProgress = memory.getQualificationProgress(contactId);
-      const conditionProgress = memory.getConditionProgress(contactId);
+      const c = memory.getContact(memoryKey);
+      const qualProgress = memory.getQualificationProgress(memoryKey);
+      const conditionProgress = memory.getConditionProgress(memoryKey);
       const q = c.qualification || {};
       const allCollected = [...qualProgress.collected, ...conditionProgress.collected]
         .map((f) => `${f}=${q[f] || ''}`)
         .join(', ');
       const searchComplete = qualProgress.collected.length >= memory.MIN_QUALIFICATION_FIELDS;
-      const missingTopics = searchComplete
-        ? conditionProgress.missing.map((f) => MISSING_TOPIC_LABELS[f] || f)
-        : qualProgress.missing.map((f) => MISSING_TOPIC_LABELS[f] || f);
+      const missingFields = searchComplete ? conditionProgress.missing : qualProgress.missing;
+      const missingTopics = missingFields.map((f) => MISSING_TOPIC_LABELS[f] || f);
+      const nextFieldKey = missingFields[0] || '';
       const phaseHint = searchComplete
-        ? ' Fase atual: já sabemos o que ele busca; induza a simulação e colete condições (renda, entrada, FGTS, carteira 3+ anos).'
-        : '';
+        ? ' Fase atual: já temos a busca; OBRIGATÓRIO colete as condições para simulação (renda, entrada, FGTS, carteira 3+ anos). Pergunte uma por vez na ordem.'
+        : ' Fase atual: colete o que ele busca na ordem: objetivo, tipo, bairro, valor, prazo. Pergunte uma por vez.';
       let thread = c.recentMessages.slice(-12).map((m) => ({ role: m.role, content: m.content }));
       const hasAssistantInThread = thread.some((m) => m.role === 'assistant');
       if (!hasAssistantInThread) {
@@ -342,13 +389,14 @@ function createFirstContactAgent(options = {}) {
         missingTopics,
         phaseHint,
       });
-      replyText = aiReply || buildFallbackReply(detection.intent, c);
+      const scriptedQuestion = nextFieldKey ? getQuestionForNextField(nextFieldKey) : '';
+      replyText = (aiReply && aiReply.trim()) ? aiReply.trim() : (scriptedQuestion || buildFallbackReply(detection.intent, c));
       const delay = randomDelayMs(replyDelay.minMs, replyDelay.maxMs);
       await sleep(delay);
       const sentMsg = await client.sendMessage(contactId, replyText);
       const sentId = sentMsg?.id?._serialized || sentMsg?.id?.id || '';
-      memory.appendMessage(contactId, { role: 'assistant', content: replyText, messageId: sentId });
-      memory.updateContact(contactId, { lastOutgoingMessageId: sentId });
+      memory.appendMessage(memoryKey, { role: 'assistant', content: replyText, messageId: sentId });
+      memory.updateContact(memoryKey, { lastOutgoingMessageId: sentId });
     }
 
     if (action === 'escalate') {
@@ -357,25 +405,25 @@ function createFirstContactAgent(options = {}) {
       await sleep(delay);
       const sentMsg = await client.sendMessage(contactId, replyText);
       const sentId = sentMsg?.id?._serialized || sentMsg?.id?.id || '';
-      memory.appendMessage(contactId, { role: 'assistant', content: replyText, messageId: sentId });
-      memory.updateContact(contactId, { lastOutgoingMessageId: sentId, handedOff: true });
+      memory.appendMessage(memoryKey, { role: 'assistant', content: replyText, messageId: sentId });
+      memory.updateContact(memoryKey, { lastOutgoingMessageId: sentId, handedOff: true });
     }
 
-    memory.updateContact(contactId, {
+    memory.updateContact(memoryKey, {
       state: action === 'escalate' ? STATES.ESCALATE_HUMAN : nextState,
       lastIntent: detection.intent,
       lastConfidence: detection.confidence,
       pendingFields,
       lastAction: action,
     });
-    memory.updateSummary(contactId);
+    memory.updateSummary(memoryKey);
     memory.persist();
 
     appendDecision({
       contactId,
       action,
       reason,
-      state: memory.getContact(contactId).state,
+      state: memory.getContact(memoryKey).state,
       intent: detection.intent,
       confidence: detection.confidence,
       pendingFields,
@@ -389,7 +437,7 @@ function createFirstContactAgent(options = {}) {
       contactId,
       intent: detection.intent,
       confidence: detection.confidence,
-      state: memory.getContact(contactId).state,
+      state: memory.getContact(memoryKey).state,
       replyText,
     };
   }
